@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 import logging
+from math import ceil
 from pathlib import Path
 import re
 import time
@@ -18,14 +19,6 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 
-from .archive import (
-    ArchiveError,
-    RecordingNotReadyError,
-    async_extract_hikvision_clip,
-    async_resolve_hikvision_source,
-    redact_credentials,
-    search_recordings,
-)
 from .const import (
     DEFAULT_ASSOCIATION_GATE_CM,
     DEFAULT_FRAME_DEBOUNCE_S,
@@ -47,6 +40,7 @@ from .const import (
 from .events import ZoneEventEngine
 from .frames import parse_target_frame
 from .fusion import FusedTrack, FusionEngine, Observation, transform_point
+from .quality import TrajectoryQualityEngine
 from .storage import TrajectoryStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -134,6 +128,12 @@ class FusionSystem:
             confirm_hits=int(settings["confirm_hits"]),
         )
         self.events = ZoneEventEngine(self.fusion_id, config["zones"])
+        self.quality = TrajectoryQualityEngine(
+            self.fusion_id,
+            float(config["room_w"]),
+            float(config["room_d"]),
+            config["quality"],
+        )
         self._pending: list[Observation] = []
         self._radar_by_entity: dict[str, str] = {}
         self._radars = {str(radar["id"]): radar for radar in config["radars"]}
@@ -141,11 +141,18 @@ class FusionSystem:
         self._last_camera_recordings: dict[tuple[str, str, str], float] = {}
         self._flush_tasks: dict[str, asyncio.Task[None]] = {}
         self._point_buffer: list[tuple[str, float, FusedTrack]] = []
+        self._last_point_samples: dict[str, float] = {}
         self._last_point_flush = time.time()
         self._latest_tracks: tuple[FusedTrack, ...] = ()
         self._remove_listener: Callable[[], None] | None = None
         self._tick_task: asyncio.Task[None] | None = None
         self._clip_tasks: set[asyncio.Task[None]] = set()
+        self._camera_recording_locks: dict[str, asyncio.Lock] = {}
+        self._camera_buffers: dict[str, tuple[Any, Any, bool, bool]] = {}
+        self._camera_buffer_task: asyncio.Task[None] | None = None
+        self._radar_stats: dict[str, dict[str, int]] = {
+            radar_id: {"observations": 0, "in_room": 0} for radar_id in self._radars
+        }
         self._last_summary_signature: tuple[object, ...] | None = None
 
     async def async_start(self) -> None:
@@ -161,6 +168,10 @@ class FusionSystem:
         self._tick_task = self.hass.async_create_background_task(
             self._tick_loop(),
             f"mmwave_fusion_{self.fusion_id}",
+        )
+        self._camera_buffer_task = self.hass.async_create_background_task(
+            self._async_ensure_camera_buffers(),
+            f"mmwave_fusion_camera_buffer_{self.fusion_id}",
         )
         for radar_id in self._radars:
             self._schedule_radar_flush(radar_id)
@@ -184,9 +195,83 @@ class FusionSystem:
                 task.cancel()
             await asyncio.gather(*self._clip_tasks, return_exceptions=True)
             self._clip_tasks.clear()
+        if self._camera_buffer_task is not None:
+            self._camera_buffer_task.cancel()
+            await asyncio.gather(self._camera_buffer_task, return_exceptions=True)
+            self._camera_buffer_task = None
+        await self._async_stop_camera_buffers()
         if self._point_buffer:
             points, self._point_buffer = self._point_buffer, []
             await self.hass.async_add_executor_job(self.storage.append_points, points)
+
+    async def _async_ensure_camera_buffers(self) -> None:
+        """Wait for camera entities that may finish setup after this integration."""
+
+        expected = {str(camera["entity_id"]) for camera in self.config["cameras"]}
+        for attempt in range(12):
+            await self._async_start_camera_buffers(log_errors=attempt == 11)
+            if expected.issubset(self._camera_buffers):
+                return
+            await asyncio.sleep(5)
+
+    async def _async_start_camera_buffers(self, *, log_errors: bool) -> None:
+        """Keep one HA HLS stream active so camera.record has an in-memory lookback."""
+
+        from homeassistant.components.camera.helper import get_camera_from_entity_id
+
+        for camera_config in self.config["cameras"]:
+            entity_id = str(camera_config["entity_id"])
+            if entity_id in self._camera_buffers:
+                continue
+            stream = None
+            provider = None
+            previous_preload = False
+            created_provider = False
+            try:
+                camera = get_camera_from_entity_id(self.hass, entity_id)
+                stream = await camera.async_create_stream()
+                if stream is None:
+                    raise RuntimeError("camera does not expose an HLS-compatible stream")
+                previous_preload = bool(stream.dynamic_stream_settings.preload_stream)
+                had_hls_provider = "hls" in stream.outputs()
+                stream.dynamic_stream_settings.preload_stream = True
+                provider = stream.add_provider("hls")
+                created_provider = not had_hls_provider
+                await stream.start()
+                self._camera_buffers[entity_id] = (
+                    stream,
+                    provider,
+                    previous_preload,
+                    created_provider,
+                )
+                _LOGGER.info("Started HA memory lookback buffer for %s", entity_id)
+            except Exception as error:  # noqa: BLE001 - one camera must not stop radar fusion
+                if stream is not None:
+                    stream.dynamic_stream_settings.preload_stream = previous_preload
+                    if provider is not None and created_provider:
+                        await stream.remove_provider(provider)
+                if log_errors:
+                    _LOGGER.error(
+                        "Unable to start HA memory lookback buffer for %s: %s",
+                        entity_id,
+                        redact_url_credentials(str(error)),
+                    )
+                else:
+                    _LOGGER.debug("Waiting for camera entity %s", entity_id)
+
+    async def _async_stop_camera_buffers(self) -> None:
+        """Release providers created by this fusion system and restore preferences."""
+
+        for entity_id, (stream, provider, previous_preload, created_provider) in tuple(
+            self._camera_buffers.items()
+        ):
+            try:
+                stream.dynamic_stream_settings.preload_stream = previous_preload
+                if created_provider and not previous_preload:
+                    await stream.remove_provider(provider)
+            except Exception:  # noqa: BLE001 - shutdown must continue
+                _LOGGER.exception("Unable to stop HA memory lookback buffer for %s", entity_id)
+        self._camera_buffers.clear()
 
     @callback
     def _state_changed(self, event: Event) -> None:
@@ -336,57 +421,118 @@ class FusionSystem:
     async def _step(self) -> None:
         now = time.time()
         observations, self._pending = self._pending, []
+        room_w = float(self.config["room_w"])
+        room_d = float(self.config["room_d"])
+        for observation in observations:
+            stats = self._radar_stats.setdefault(
+                observation.radar_id,
+                {"observations": 0, "in_room": 0},
+            )
+            stats["observations"] += 1
+            if 0 <= observation.x <= room_w and 0 <= observation.y <= room_d:
+                stats["in_room"] += 1
+
         result = self.engine.step(observations, now)
         self._latest_tracks = result.tracks
+        self.quality.observe(result.tracks, now)
         for track in result.started:
             await self.hass.async_add_executor_job(self.storage.start_track, self.fusion_id, track)
-        if result.ended_track_ids:
-            await self.hass.async_add_executor_job(self.storage.end_tracks, result.ended_track_ids, now)
 
+        persist_interval = float(self.config["quality"]["persist_interval_s"])
         for track in result.tracks:
-            self._point_buffer.append((self.fusion_id, now, track))
+            last_sample = self._last_point_samples.get(track.track_id)
+            if track.sources and (last_sample is None or now - last_sample >= persist_interval):
+                self._point_buffer.append((self.fusion_id, now, track))
+                self._last_point_samples[track.track_id] = now
         if self._point_buffer and now - self._last_point_flush >= DEFAULT_POINT_FLUSH_S:
             points, self._point_buffer = self._point_buffer, []
             self._last_point_flush = now
             await self.hass.async_add_executor_job(self.storage.append_points, points)
 
         zone_events = self.events.evaluate(result.tracks, now)
-        for zone_event in zone_events:
-            await self.hass.async_add_executor_job(self.storage.insert_event, zone_event)
-            self.hass.bus.async_fire(EVENT_TYPE, zone_event)
-            await self._record_event(zone_event)
+        self.quality.add_zone_events(zone_events)
+        trajectory_events: list[dict[str, object]] = []
+        for track_id in result.ended_track_ids:
+            finished = self.quality.finish(track_id, now)
+            if finished is None:
+                await self.hass.async_add_executor_job(self.storage.end_tracks, [track_id], now)
+            else:
+                trajectory_event, assessment = finished
+                trajectory_events.append(trajectory_event)
+                await self.hass.async_add_executor_job(
+                    self.storage.finish_track,
+                    track_id,
+                    now,
+                    {
+                        "quality_score": assessment.score,
+                        "quality_reason": assessment.reason,
+                        "quality_breakdown": assessment.breakdown,
+                        "quality_metrics": assessment.metrics,
+                        "recording_decision": (
+                            "eligible" if assessment.eligible else "rejected_quality"
+                        ),
+                    },
+                )
+            self._last_point_samples.pop(track_id, None)
+
+        emitted_events = [*zone_events, *trajectory_events]
+        for fusion_event in emitted_events:
+            await self._record_event(fusion_event)
+            await self.hass.async_add_executor_job(self.storage.insert_event, fusion_event)
+            self.hass.bus.async_fire(EVENT_TYPE, fusion_event)
 
         payload = {
             "fusion_id": self.fusion_id,
             "timestamp": now,
             "tracks": [track.as_dict() for track in result.tracks],
-            "events": zone_events,
+            "events": emitted_events,
             "radars": self._radar_health(),
         }
         async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_{self.fusion_id}", payload)
         self._publish_summary(payload)
 
     async def _record_event(self, event: dict[str, object]) -> None:
+        metadata = event.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            event["metadata"] = metadata
+        decisions: list[dict[str, object]] = []
+        metadata["recording_decisions"] = decisions
+        event["recording_decisions"] = decisions
+
         for camera in self.config["cameras"]:
+            entity_id = str(camera["entity_id"])
+            decision: dict[str, object] = {
+                "camera_entity_id": entity_id,
+                "status": "not_applicable",
+            }
+            decisions.append(decision)
             if camera["zones"] and event["zone_id"] not in camera["zones"]:
+                decision["status"] = "zone_filtered"
                 continue
             if event["event_type"] not in camera["event_types"]:
+                decision["status"] = "event_type_filtered"
                 continue
             recording_key = (str(camera["entity_id"]), str(event["zone_id"]), str(event["event_type"]))
             event_timestamp = float(event["timestamp"])
             last_recording = self._last_camera_recordings.get(recording_key)
             if last_recording is not None and event_timestamp - last_recording < int(camera["cooldown_s"]):
+                decision["status"] = "cooldown"
+                decision["retry_after_s"] = round(
+                    int(camera["cooldown_s"]) - (event_timestamp - last_recording),
+                    1,
+                )
                 continue
-            self._last_camera_recordings[recording_key] = event_timestamp
-            lookback = int(camera["lookback"])
+            base_lookback = int(camera["lookback"])
+            trajectory_start = float(metadata.get("start_ts", event_timestamp))
+            requested_lookback = max(0, ceil(event_timestamp - trajectory_start) + base_lookback)
+            lookback = min(requested_lookback, int(camera["buffer_seconds"]))
             duration = int(camera["duration"])
-            entity_id = str(camera["entity_id"])
             safe_camera = re.sub(r"[^a-zA-Z0-9_-]+", "_", entity_id)
             date_path = datetime.fromtimestamp(float(event["timestamp"])).strftime("%Y-%m-%d")
             clip_id = uuid4().hex
             relative_path = f"mmwave_fusion/{self.fusion_id}/{date_path}/{event['event_id']}_{safe_camera}.mp4"
             filename = f"/media/{relative_path}"
-            provider = str(camera["recording_source"])
             now = time.time()
             clip = {
                 "clip_id": clip_id,
@@ -396,8 +542,8 @@ class FusionSystem:
                 "requested_at": now,
                 "start_ts": float(event["timestamp"]) - lookback,
                 "end_ts": float(event["timestamp"]) + duration,
-                "status": "waiting" if provider in {"hikvision_sd", "hikvision_nvr"} else "requested",
-                "provider": provider,
+                "status": "waiting",
+                "provider": "ha_live",
                 "updated_at": now,
                 "completed_at": None,
                 "file_size": None,
@@ -406,108 +552,84 @@ class FusionSystem:
             try:
                 await self.hass.async_add_executor_job(Path(filename).parent.mkdir, 0o755, True, True)
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                if provider in {"hikvision_sd", "hikvision_nvr"}:
-                    task = self.hass.async_create_background_task(
-                        self._extract_hikvision_archive_clip(camera, clip, Path(filename)),
-                        f"mmwave_fusion_archive_{clip_id}",
-                    )
-                    self._clip_tasks.add(task)
-                    task.add_done_callback(self._clip_tasks.discard)
-                    continue
+                self._last_camera_recordings[recording_key] = event_timestamp
+                decision.update(
+                    {
+                        "status": "scheduled",
+                        "clip_id": clip_id,
+                        "lookback_s": lookback,
+                        "buffer_truncated": requested_lookback > lookback,
+                    }
+                )
+                task = self.hass.async_create_background_task(
+                    self._record_live_clip(camera, clip, Path(filename), lookback, duration),
+                    f"mmwave_fusion_record_{clip_id}",
+                )
+                self._clip_tasks.add(task)
+                task.add_done_callback(self._clip_tasks.discard)
+            except Exception as error:  # noqa: BLE001 - one camera must not stop fusion
+                clip["status"] = "failed"
+                clip["updated_at"] = time.time()
+                clip["error"] = redact_url_credentials(str(error))[-500:]
+                decision["status"] = "failed"
+                decision["error"] = clip["error"]
+                await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
+                _LOGGER.exception("Unable to request recording from %s for event %s", entity_id, event["event_id"])
+
+    async def _record_live_clip(
+        self,
+        camera: dict[str, Any],
+        clip: dict[str, object],
+        filename: Path,
+        lookback: int,
+        duration: int,
+    ) -> None:
+        """Record from HA's preloaded live stream and verify that a clip exists."""
+
+        entity_id = str(camera["entity_id"])
+        lock = self._camera_recording_locks.setdefault(entity_id, asyncio.Lock())
+        try:
+            async with lock:
+                clip["status"] = "extracting"
+                clip["updated_at"] = time.time()
+                clip["error"] = None
+                await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
                 await self.hass.services.async_call(
                     "camera",
                     "record",
                     {
                         "entity_id": entity_id,
-                        "filename": filename,
+                        "filename": str(filename),
                         "lookback": lookback,
                         "duration": duration,
                     },
-                    blocking=False,
+                    blocking=True,
                 )
-            except Exception:  # noqa: BLE001 - one camera must not stop fusion
-                clip["status"] = "failed"
-                clip["updated_at"] = time.time()
-                clip["error"] = "Unable to request recording"
-                await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                _LOGGER.exception("Unable to request recording from %s for event %s", entity_id, event["event_id"])
-
-    async def _extract_hikvision_archive_clip(
-        self,
-        camera: dict[str, Any],
-        clip: dict[str, object],
-        filename: Path,
-    ) -> None:
-        """Wait for the camera archive, then extract an event interval without transcoding."""
-
-        try:
-            source = await async_resolve_hikvision_source(self.hass, camera)
-            settle_s = int(camera["archive_settle_s"])
-            initial_delay = max(float(clip["end_ts"]) + settle_s - time.time(), 0.0)
-            if initial_delay:
-                await asyncio.sleep(initial_delay)
-
-            attempts = int(camera["archive_retries"]) + 1
-            retry_interval = int(camera["archive_retry_interval_s"])
-            last_error: ArchiveError | None = None
-            for attempt in range(attempts):
-                clip["status"] = "extracting"
-                clip["updated_at"] = time.time()
-                clip["error"] = None
-                await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                try:
-                    await self.hass.async_add_executor_job(
-                        search_recordings,
-                        source,
-                        float(clip["start_ts"]),
-                        float(clip["end_ts"]),
-                    )
-                    size = await async_extract_hikvision_clip(
-                        source,
-                        float(clip["start_ts"]),
-                        float(clip["end_ts"]),
-                        filename,
-                    )
-                except ArchiveError as error:
-                    last_error = error
-                    if attempt + 1 >= attempts:
-                        break
-                    clip["status"] = "waiting"
-                    clip["updated_at"] = time.time()
-                    clip["error"] = (
-                        "Recording has not been indexed yet"
-                        if isinstance(error, RecordingNotReadyError)
-                        else redact_credentials(str(error))[-500:]
-                    )
-                    await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                    await asyncio.sleep(retry_interval)
-                    continue
-
+                size = await self.hass.async_add_executor_job(
+                    lambda: filename.stat().st_size if filename.is_file() else 0
+                )
+                if size <= 0:
+                    raise RuntimeError("camera.record completed without creating a playable file")
                 clip["status"] = "ready"
                 clip["updated_at"] = time.time()
                 clip["completed_at"] = clip["updated_at"]
                 clip["file_size"] = size
                 clip["error"] = None
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                return
-
-            if last_error is not None:
-                raise last_error
-            raise ArchiveError("Historical recording extraction exhausted all attempts")
         except asyncio.CancelledError:
             clip["status"] = "failed"
             clip["updated_at"] = time.time()
-            clip["error"] = "Extraction cancelled before completion"
+            clip["error"] = "Recording cancelled before completion"
             await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
             raise
-        except Exception as error:  # noqa: BLE001 - archive failure must not stop fusion
+        except Exception as error:  # noqa: BLE001 - recording failure must not stop fusion
             clip["status"] = "failed"
             clip["updated_at"] = time.time()
-            clip["error"] = redact_credentials(str(error))[-500:]
+            clip["error"] = redact_url_credentials(str(error))[-500:]
             await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-            _LOGGER.error(
-                "Unable to extract historical recording from %s for event %s: %s",
-                camera["entity_id"],
+            _LOGGER.exception(
+                "Unable to record HA memory-buffered video from %s for event %s: %s",
+                entity_id,
                 clip["event_id"],
                 clip["error"],
             )
@@ -519,7 +641,11 @@ class FusionSystem:
         radars = payload["radars"]
         assert isinstance(radars, list)
         stable_health = tuple((radar["id"], radar["available"]) for radar in radars)
-        signature = (len(tracks), stable_health)
+        calibration_warnings = tuple(
+            str(radar["id"]) for radar in radars if radar.get("calibration_warning")
+        )
+        multi_source_targets = sum(len(track.get("sources", [])) >= 2 for track in tracks)
+        signature = (len(tracks), multi_source_targets, stable_health, calibration_warnings)
         if signature == self._last_summary_signature:
             return
         self._last_summary_signature = signature
@@ -528,6 +654,8 @@ class FusionSystem:
             "fusion_id": self.fusion_id,
             "online_radars": sum(1 for _, available in stable_health if available),
             "radar_count": len(stable_health),
+            "multi_source_targets": multi_source_targets,
+            "calibration_warnings": list(calibration_warnings),
         }
         self.hass.states.async_set(
             ENTITY_TARGET_COUNT.format(fusion_id=slugify(self.fusion_id)),
@@ -560,6 +688,15 @@ class FusionSystem:
                 radar.get("frame_entity")
                 and (age_s is None or age_s > float(radar["frame_stale_after_s"]))
             )
+            stats = self._radar_stats.get(radar_id, {"observations": 0, "in_room": 0})
+            observation_count = int(stats["observations"])
+            in_room_count = int(stats["in_room"])
+            in_room_ratio = in_room_count / observation_count if observation_count else None
+            calibration_warning = bool(
+                observation_count >= 100
+                and in_room_ratio is not None
+                and in_room_ratio < 0.2
+            )
             health.append(
                 {
                     "id": radar_id,
@@ -571,6 +708,10 @@ class FusionSystem:
                     "last_updated": state.last_updated.timestamp() if state is not None else None,
                     "age_s": round(age_s, 3) if age_s is not None else None,
                     "stale": stale,
+                    "observations": observation_count,
+                    "in_room_observations": in_room_count,
+                    "in_room_ratio": round(in_room_ratio, 4) if in_room_ratio is not None else None,
+                    "calibration_warning": calibration_warning,
                 }
             )
         return health
@@ -583,6 +724,14 @@ class FusionSystem:
             "zone_count": len(self.config["zones"]),
             "camera_count": len(self.config["cameras"]),
             "target_count": len(self._latest_tracks),
+            "multi_source_target_count": sum(
+                len(track.sources) >= 2 for track in self._latest_tracks
+            ),
+            "calibration_warnings": [
+                radar["id"]
+                for radar in self._radar_health()
+                if radar.get("calibration_warning")
+            ],
         }
 
 
@@ -654,6 +803,18 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         zones.append({**raw_zone, "id": zone_id, "polygon": polygon, "dwell_s": float(raw_zone.get("dwell_s", 0.0))})
 
     cameras: list[dict[str, Any]] = []
+    legacy_camera_keys = {
+        "archive_host",
+        "archive_retries",
+        "archive_retry_interval_s",
+        "archive_settle_s",
+        "http_port",
+        "rtsp_port",
+        "track_id",
+        "username",
+        "password",
+    }
+    allowed_event_types = {"enter", "exit", "dwell", "trajectory", "traverse"}
     for index, raw_camera in enumerate(config.get("cameras") or []):
         if not isinstance(raw_camera, dict) or not raw_camera.get("entity_id"):
             raise ValueError(f"cameras[{index}] must define entity_id")
@@ -663,29 +824,43 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 f"Camera {raw_camera['entity_id']} references unknown zones: {sorted(unknown_zones)}"
             )
-        recording_source = str(raw_camera.get("recording_source") or "ha_live").lower()
-        if recording_source not in {"ha_live", "hikvision_sd", "hikvision_nvr"}:
+        requested_source = str(raw_camera.get("recording_source") or "ha_live").lower()
+        if requested_source not in {"ha_live", "hikvision_sd", "hikvision_nvr"}:
             raise ValueError(
-                f"Camera {raw_camera['entity_id']} recording_source must be ha_live, hikvision_sd, or hikvision_nvr"
+                f"Camera {raw_camera['entity_id']} recording_source must be ha_live"
             )
-        track_id = int(raw_camera.get("track_id", 101))
-        if track_id < 1 or track_id > 9999:
-            raise ValueError(f"Camera {raw_camera['entity_id']} track_id is out of range")
+        legacy_source = requested_source in {"hikvision_sd", "hikvision_nvr"}
+        if legacy_source:
+            _LOGGER.warning(
+                "Migrating %s from %s archive reads to the HA live memory buffer",
+                raw_camera["entity_id"],
+                requested_source,
+            )
+        raw_event_types = ["traverse"] if legacy_source else list(
+            raw_camera.get("event_types") or ["traverse"]
+        )
+        unknown_event_types = set(raw_event_types) - allowed_event_types
+        if unknown_event_types:
+            raise ValueError(
+                f"Camera {raw_camera['entity_id']} has unsupported event types: "
+                f"{sorted(unknown_event_types)}"
+            )
+        camera_options = {
+            key: value for key, value in raw_camera.items() if key not in legacy_camera_keys
+        }
         cameras.append(
             {
-                **raw_camera,
+                **camera_options,
                 "zones": camera_zones,
-                "event_types": list(raw_camera.get("event_types") or ["enter", "dwell"]),
+                "event_types": raw_event_types,
                 "lookback": max(int(raw_camera.get("lookback", 5)), 0),
-                "duration": max(int(raw_camera.get("duration", 20)), 1),
-                "cooldown_s": max(int(raw_camera.get("cooldown_s", 30)), 0),
-                "recording_source": recording_source,
-                "track_id": track_id,
-                "http_port": int(raw_camera.get("http_port", 80)),
-                "rtsp_port": int(raw_camera.get("rtsp_port", 554)),
-                "archive_settle_s": max(int(raw_camera.get("archive_settle_s", 15)), 0),
-                "archive_retry_interval_s": max(int(raw_camera.get("archive_retry_interval_s", 30)), 5),
-                "archive_retries": min(max(int(raw_camera.get("archive_retries", 24)), 0), 120),
+                "duration": min(max(int(raw_camera.get("duration", 10)), 1), 60),
+                "cooldown_s": max(int(raw_camera.get("cooldown_s", 60)), 0),
+                "buffer_seconds": min(
+                    max(int(raw_camera.get("buffer_seconds", 30)), 5),
+                    30,
+                ),
+                "recording_source": "ha_live",
             }
         )
 
@@ -702,6 +877,36 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         "track_ttl_s": float(raw_fusion.get("track_ttl_s", default_track_ttl)),
         "confirm_hits": max(int(raw_fusion.get("confirm_hits", 2)), 1),
     }
+    raw_quality = dict(config.get("quality") or {})
+    quality = {
+        "min_score": min(max(int(raw_quality.get("min_score", 70)), 0), 100),
+        "min_duration_s": max(float(raw_quality.get("min_duration_s", 3.0)), 0.0),
+        "min_observed_points": max(int(raw_quality.get("min_observed_points", 20)), 2),
+        "min_displacement_cm": max(
+            float(raw_quality.get("min_displacement_cm", 120.0)),
+            0.0,
+        ),
+        "min_observed_ratio": min(
+            max(float(raw_quality.get("min_observed_ratio", 0.6)), 0.0),
+            1.0,
+        ),
+        "min_inside_ratio": min(
+            max(float(raw_quality.get("min_inside_ratio", 0.6)), 0.0),
+            1.0,
+        ),
+        "max_gap_s": max(float(raw_quality.get("max_gap_s", 0.8)), 0.05),
+        "max_jump_cm": max(float(raw_quality.get("max_jump_cm", 100.0)), 1.0),
+        "require_enter_exit": bool(raw_quality.get("require_enter_exit", True)),
+        "smoothing_s": min(
+            max(float(raw_quality.get("smoothing_s", 0.5)), 0.05),
+            5.0,
+        ),
+        "history_s": min(max(float(raw_quality.get("history_s", 60.0)), 10.0), 300.0),
+        "persist_interval_s": min(
+            max(float(raw_quality.get("persist_interval_s", 0.5)), 0.1),
+            10.0,
+        ),
+    }
     return {
         **config,
         "fusion_id": fusion_id,
@@ -711,6 +916,7 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         "zones": zones,
         "cameras": cameras,
         "fusion": fusion,
+        "quality": quality,
     }
 
 
@@ -761,3 +967,9 @@ def entity_coordinate_scale(radar: dict[str, Any], state: Any) -> float:
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9_]+", "_", value.lower()).strip("_")
     return slug or "home"
+
+
+def redact_url_credentials(value: str) -> str:
+    """Remove URL user-info before an exception is persisted or sent to the UI."""
+
+    return re.sub(r"(?<=://)[^/@\s]+@", "***@", value)

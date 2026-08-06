@@ -112,6 +112,15 @@ class TrajectoryStore:
         with self._lock, self._require_connection() as connection:
             connection.executemany("UPDATE tracks SET end_ts = ? WHERE track_id = ?", rows)
 
+    def finish_track(self, track_id: str, end_ts: float, metadata: dict[str, object]) -> None:
+        """Close a track and persist its final quality assessment."""
+
+        with self._lock, self._require_connection() as connection:
+            connection.execute(
+                "UPDATE tracks SET end_ts = ?, metadata = ? WHERE track_id = ?",
+                (end_ts, json.dumps(metadata), track_id),
+            )
+
     def append_points(self, points: Iterable[tuple[str, float, FusedTrack]]) -> None:
         rows = [
             (
@@ -215,7 +224,21 @@ class TrajectoryStore:
         parameters.append(min(max(limit, 1), 500))
         with self._lock:
             rows = self._require_connection().execute(sql, parameters).fetchall()
-        return [dict(row) for row in rows]
+        result: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                metadata = json.loads(str(item.get("metadata") or "{}"))
+            except (TypeError, ValueError):
+                metadata = {}
+            item["metadata"] = metadata
+            if isinstance(metadata, dict):
+                item["quality_score"] = metadata.get("quality_score")
+                item["quality_reason"] = metadata.get("quality_reason")
+                item["recording_decision"] = metadata.get("recording_decision")
+                item["recording_decisions"] = metadata.get("recording_decisions")
+            result.append(item)
+        return result
 
     def query_track(self, track_id: str, limit: int = 5000) -> list[dict[str, object]]:
         with self._lock:
