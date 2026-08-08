@@ -40,6 +40,7 @@ class FusedTrack:
     sources: tuple[str, ...]
     started_at: float
     last_seen: float
+    source_count: int = 1
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -50,6 +51,7 @@ class FusedTrack:
             "vy": round(self.vy, 2),
             "confidence": round(self.confidence, 3),
             "sources": list(self.sources),
+            "source_count": self.source_count,
             "started_at": self.started_at,
             "last_seen": self.last_seen,
         }
@@ -94,6 +96,7 @@ class _Track:
     vy: float
     confidence: float
     sources: set[str]
+    seen_sources: set[str]
     started_at: float
     last_seen: float
     updated_at: float
@@ -118,6 +121,7 @@ class _Track:
             sources=tuple(sorted(self.sources)),
             started_at=self.started_at,
             last_seen=self.last_seen,
+            source_count=len(self.seen_sources),
         )
 
 
@@ -131,11 +135,13 @@ class FusionEngine:
         merge_gate_cm: float = 70.0,
         track_ttl_s: float = 1.2,
         confirm_hits: int = 2,
+        min_confirm_sources: int = 1,
     ) -> None:
         self.association_gate_cm = max(association_gate_cm, 10.0)
         self.merge_gate_cm = max(merge_gate_cm, 10.0)
         self.track_ttl_s = max(track_ttl_s, 0.2)
         self.confirm_hits = max(confirm_hits, 1)
+        self.min_confirm_sources = max(min_confirm_sources, 1)
         self._tracks: dict[str, _Track] = {}
 
     def reset(self) -> None:
@@ -164,10 +170,18 @@ class FusionEngine:
             track.vy += beta * residual_y / dt
             track.last_seen = cluster.timestamp
             track.sources = cluster.radar_ids
+            track.seen_sources.update(cluster.radar_ids)
             track.hits += max(1, len(cluster.radar_ids))
-            track.confidence = min(1.0, track.confidence + 0.1 + 0.08 * source_bonus)
+            confidence_ceiling = 1.0 if len(track.seen_sources) >= self.min_confirm_sources else 0.74
+            track.confidence = min(
+                confidence_ceiling,
+                track.confidence + 0.1 + 0.08 * source_bonus,
+            )
             was_confirmed = track.confirmed
-            track.confirmed = track.hits >= self.confirm_hits
+            track.confirmed = (
+                track.hits >= self.confirm_hits
+                and len(track.seen_sources) >= self.min_confirm_sources
+            )
             if track.confirmed and not was_confirmed:
                 started.append(track.public())
 
@@ -188,11 +202,15 @@ class FusionEngine:
                 vy=0.0,
                 confidence=min(0.9, 0.35 + 0.18 * len(cluster.radar_ids)),
                 sources=cluster.radar_ids,
+                seen_sources=set(cluster.radar_ids),
                 started_at=cluster.timestamp,
                 last_seen=cluster.timestamp,
                 updated_at=now,
                 hits=hits,
-                confirmed=hits >= self.confirm_hits,
+                confirmed=(
+                    hits >= self.confirm_hits
+                    and len(cluster.radar_ids) >= self.min_confirm_sources
+                ),
             )
             self._tracks[track.track_id] = track
             if track.confirmed:
@@ -255,6 +273,18 @@ class FusionEngine:
             and cluster_index < cluster_count
             and costs[track_index][cluster_index] <= 1.0
         ]
+
+
+def observations_in_room(
+    observations: list[Observation], room_w: float, room_d: float
+) -> list[Observation]:
+    """Discard out-of-floor-plan detections before they create ghost tracks."""
+
+    return [
+        observation
+        for observation in observations
+        if 0 <= observation.x <= room_w and 0 <= observation.y <= room_d
+    ]
 
 
 def _minimum_cost_assignment(costs: list[list[float]]) -> list[tuple[int, int]]:

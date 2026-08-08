@@ -25,7 +25,9 @@ ENTITY_OCCUPIED = "binary_sensor.mmwave_fusion_{fusion_id}_occupied"
 MODEL_COORDINATE_SCALE: dict[str, float] = {
     "ld2450": 0.1,
     "ld2451": 1.0,
+    "ld2452": 1.0,
     "ld2453": 1.0,
+    "ld2454": 1.0,
     "r60abd1": 1.0,
 }
 

@@ -150,8 +150,13 @@ def assess_trajectory(
     enter_count = sum(event["event_type"] == "enter" for event in events)
     exit_count = sum(event["event_type"] == "exit" for event in events)
     transition_count = enter_count + exit_count
+    boundary_margin = float(settings.get("boundary_margin_cm", 60.0))
+    start_edge = _boundary_edge(first.x, first.y, room_w, room_d, boundary_margin)
+    end_edge = _boundary_edge(last.x, last.y, room_w, room_d, boundary_margin)
+    boundary_crossing = start_edge is not None and end_edge is not None and start_edge != end_edge
+    complete_crossing = bool(enter_count and exit_count) or boundary_crossing
 
-    topology = 30 if enter_count and exit_count else 12 if transition_count else 0
+    topology = 30 if complete_crossing else 12 if transition_count else 0
     continuity = round(
         15 * _clamp(observed_ratio / 0.8)
         + 10 * _clamp(1.0 - max_gap / max(float(settings["max_gap_s"]), 0.01))
@@ -192,6 +197,7 @@ def assess_trajectory(
         "dual_source_ratio": round(dual_ratio, 3),
         "enter_count": enter_count,
         "exit_count": exit_count,
+        "boundary_crossing": int(boundary_crossing),
     }
 
     hard_failures: list[str] = []
@@ -209,14 +215,31 @@ def assess_trajectory(
         hard_failures.append("observation_gap")
     if max_jump > float(settings["max_jump_cm"]):
         hard_failures.append("trajectory_jump")
-    if bool(settings["require_enter_exit"]) and not (enter_count and exit_count):
+    if bool(settings["require_enter_exit"]) and not complete_crossing:
         hard_failures.append("incomplete_crossing")
-    elif bool(settings["require_enter_exit"]) and transition_count != 2:
+    elif bool(settings["require_enter_exit"]) and not boundary_crossing and transition_count != 2:
         hard_failures.append("unstable_boundary_crossing")
 
     eligible = not hard_failures and score >= int(settings["min_score"])
     reason = hard_failures[0] if hard_failures else "eligible" if eligible else "below_score_threshold"
     return TrajectoryAssessment(score, eligible, reason, breakdown, metrics)
+
+
+def _boundary_edge(
+    x: float,
+    y: float,
+    room_w: float,
+    room_d: float,
+    margin: float,
+) -> str | None:
+    distances = {
+        "left": abs(x),
+        "right": abs(room_w - x),
+        "top": abs(y),
+        "bottom": abs(room_d - y),
+    }
+    edge = min(distances, key=distances.get)
+    return edge if distances[edge] <= margin else None
 
 
 def _bucket_samples(samples: list[TrajectorySample], interval_s: float) -> list[TrajectorySample]:

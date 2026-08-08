@@ -39,7 +39,13 @@ from .const import (
 )
 from .events import ZoneEventEngine
 from .frames import parse_target_frame
-from .fusion import FusedTrack, FusionEngine, Observation, transform_point
+from .fusion import (
+    FusedTrack,
+    FusionEngine,
+    Observation,
+    observations_in_room,
+    transform_point,
+)
 from .quality import TrajectoryQualityEngine
 from .storage import TrajectoryStore
 
@@ -126,6 +132,7 @@ class FusionSystem:
             merge_gate_cm=float(settings["merge_gate_cm"]),
             track_ttl_s=float(settings["track_ttl_s"]),
             confirm_hits=int(settings["confirm_hits"]),
+            min_confirm_sources=int(settings["min_confirm_sources"]),
         )
         self.events = ZoneEventEngine(self.fusion_id, config["zones"])
         self.quality = TrajectoryQualityEngine(
@@ -432,7 +439,7 @@ class FusionSystem:
             if 0 <= observation.x <= room_w and 0 <= observation.y <= room_d:
                 stats["in_room"] += 1
 
-        result = self.engine.step(observations, now)
+        result = self.engine.step(observations_in_room(observations, room_w, room_d), now)
         self._latest_tracks = result.tracks
         self.quality.observe(result.tracks, now)
         for track in result.started:
@@ -876,6 +883,13 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         "merge_gate_cm": float(raw_fusion.get("merge_gate_cm", DEFAULT_MERGE_GATE_CM)),
         "track_ttl_s": float(raw_fusion.get("track_ttl_s", default_track_ttl)),
         "confirm_hits": max(int(raw_fusion.get("confirm_hits", 2)), 1),
+        "min_confirm_sources": min(
+            max(
+                int(raw_fusion.get("min_confirm_sources", 2 if len(radars) > 1 else 1)),
+                1,
+            ),
+            len(radars),
+        ),
     }
     raw_quality = dict(config.get("quality") or {})
     quality = {
@@ -905,6 +919,10 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         "persist_interval_s": min(
             max(float(raw_quality.get("persist_interval_s", 0.5)), 0.1),
             10.0,
+        ),
+        "boundary_margin_cm": min(
+            max(float(raw_quality.get("boundary_margin_cm", 60.0)), 10.0),
+            250.0,
         ),
     }
     return {
