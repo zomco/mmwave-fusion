@@ -24,11 +24,14 @@ from .const import (
     DEFAULT_FRAME_DEBOUNCE_S,
     DEFAULT_FUSION_ID,
     DEFAULT_MERGE_GATE_CM,
+    DEFAULT_EVENT_RETENTION_DAYS,
     DEFAULT_POINT_FLUSH_S,
+    DEFAULT_POINT_RETENTION_DAYS,
     DEFAULT_RATE_HZ,
     DEFAULT_TRACK_TTL_S,
     EVENT_TYPE,
     MODEL_COORDINATE_SCALE,
+    PRUNE_INTERVAL_S,
     SIGNAL_SYSTEM_ADDED,
     SIGNAL_SYSTEM_REMOVED,
     SIGNAL_UPDATE,
@@ -62,6 +65,7 @@ class FusionCoordinator:
         self.systems: dict[str, FusionSystem] = {}
         self.configs: dict[str, dict[str, Any]] = {}
         self.calibration_profiles: dict[str, dict[str, Any]] = {}
+        self._prune_task: asyncio.Task[None] | None = None
 
     async def async_initialize(self) -> None:
         await self.hass.async_add_executor_job(self.trajectory_store.initialize)
@@ -71,6 +75,7 @@ class FusionCoordinator:
         )
         if interrupted:
             _LOGGER.warning("Marked %s interrupted recording request(s) as failed", interrupted)
+        self._prune_task = self.hass.async_create_task(self._async_prune_loop())
         stored = await self.config_store.async_load() or {}
         profiles = stored.get("calibration_profiles", {})
         if isinstance(profiles, dict):
@@ -107,9 +112,34 @@ class FusionCoordinator:
         return system.status()
 
     async def async_shutdown(self) -> None:
+        if self._prune_task is not None:
+            self._prune_task.cancel()
+            self._prune_task = None
         for system in tuple(self.systems.values()):
             await system.async_stop()
         await self.hass.async_add_executor_job(self.trajectory_store.close)
+
+    async def _async_prune_loop(self) -> None:
+        """Trim history periodically so the database stops growing forever."""
+
+        while True:
+            try:
+                removed = await self.hass.async_add_executor_job(
+                    self.trajectory_store.prune,
+                    time.time(),
+                    DEFAULT_POINT_RETENTION_DAYS * 86400.0,
+                    DEFAULT_EVENT_RETENTION_DAYS * 86400.0,
+                )
+                if any(removed.values()):
+                    _LOGGER.info(
+                        "Pruned history: %s track points, %s tracks, %s events",
+                        removed["track_points"], removed["tracks"], removed["events"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a prune failure must not stop fusion
+                _LOGGER.exception("Trajectory history prune failed")
+            await asyncio.sleep(PRUNE_INTERVAL_S)
 
     async def async_remove(self, fusion_id: str) -> bool:
         system = self.systems.pop(fusion_id, None)

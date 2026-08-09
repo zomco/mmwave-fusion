@@ -14,6 +14,13 @@ DEFAULT_TRACK_TTL_S = 1.2
 DEFAULT_FRAME_DEBOUNCE_S = 0.05
 DEFAULT_POINT_FLUSH_S = 1.0
 
+# History retention. track_points is written at the fusion rate and dominates
+# the database; tracks and events are metadata and are what the event list
+# reads, so they are kept far longer.
+DEFAULT_POINT_RETENTION_DAYS = 7
+DEFAULT_EVENT_RETENTION_DAYS = 90
+PRUNE_INTERVAL_S = 6 * 3600
+
 EVENT_TYPE = "mmwave_fusion_event"
 SIGNAL_UPDATE = "mmwave_fusion_update"
 

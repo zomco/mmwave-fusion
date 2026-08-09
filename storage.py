@@ -206,6 +206,50 @@ class TrajectoryStore:
             )
             return cursor.rowcount
 
+    def prune(self, now: float, point_max_age_s: float, event_max_age_s: float) -> dict[str, int]:
+        """Delete history older than the retention windows.
+
+        Nothing pruned this store before, so it grew at the fusion rate for as
+        long as Home Assistant ran - on the development instance that was
+        ~310k track_points a day, about 51 MB.
+
+        track_points is the bulk and gets the short window. tracks and events
+        are metadata, orders of magnitude smaller, and are what the event list
+        reads, so they get a long one.
+
+        Clips are never pruned here: their rows point at recordings on disk,
+        and dropping the row would orphan the file rather than reclaim
+        anything. A clip whose event is pruned keeps its row, so the file
+        remains discoverable.
+
+        Note that SQLite reuses freed pages but does not shrink the file, so
+        this stops growth rather than reclaiming space already taken. Run
+        VACUUM once by hand to reclaim it.
+        """
+
+        point_cutoff = now - point_max_age_s
+        event_cutoff = now - event_max_age_s
+        removed = {"track_points": 0, "tracks": 0, "events": 0}
+        with self._lock, self._require_connection() as connection:
+            removed["track_points"] = connection.execute(
+                "DELETE FROM track_points WHERE ts < ?", (point_cutoff,)
+            ).rowcount
+            # Only tracks that have finished; an open track still accrues
+            # points regardless of when it started.
+            removed["tracks"] = connection.execute(
+                "DELETE FROM tracks WHERE end_ts IS NOT NULL AND end_ts < ?",
+                (event_cutoff,),
+            ).rowcount
+            removed["events"] = connection.execute(
+                """
+                DELETE FROM events
+                WHERE ts < ?
+                  AND event_id NOT IN (SELECT event_id FROM clips)
+                """,
+                (event_cutoff,),
+            ).rowcount
+        return removed
+
     def query_events(self, fusion_id: str, limit: int = 100, before: float | None = None) -> list[dict[str, object]]:
         sql = """
             SELECT e.*, c.clip_id, c.camera_entity_id,
