@@ -47,6 +47,7 @@ from .fusion import (
     transform_point,
 )
 from .quality import TrajectoryQualityEngine
+from .profiles import normalize_calibration_profile
 from .storage import TrajectoryStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class FusionCoordinator:
         self.trajectory_store = TrajectoryStore(hass.config.path(".storage", "mmwave_fusion.sqlite"))
         self.systems: dict[str, FusionSystem] = {}
         self.configs: dict[str, dict[str, Any]] = {}
+        self.calibration_profiles: dict[str, dict[str, Any]] = {}
 
     async def async_initialize(self) -> None:
         await self.hass.async_add_executor_job(self.trajectory_store.initialize)
@@ -71,6 +73,13 @@ class FusionCoordinator:
         if interrupted:
             _LOGGER.warning("Marked %s interrupted recording request(s) as failed", interrupted)
         stored = await self.config_store.async_load() or {}
+        profiles = stored.get("calibration_profiles", {})
+        if isinstance(profiles, dict):
+            self.calibration_profiles = {
+                str(profile_id): profile
+                for profile_id, profile in profiles.items()
+                if isinstance(profile, dict)
+            }
         systems = stored.get("systems", {})
         if isinstance(systems, dict):
             for fusion_id, config in systems.items():
@@ -94,7 +103,7 @@ class FusionCoordinator:
         self.configs[fusion_id] = normalized
         await system.async_start()
         if persist:
-            await self.config_store.async_save({"systems": self.configs})
+            await self._async_save()
         return system.status()
 
     async def async_shutdown(self) -> None:
@@ -109,8 +118,45 @@ class FusionCoordinator:
             return False
         await system.async_stop()
         system.remove_summary_states()
-        await self.config_store.async_save({"systems": self.configs})
+        await self._async_save()
         return True
+
+    async def async_upsert_calibration_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create or update one device-level calibration profile."""
+
+        profile_id = str(profile.get("profile_id") or "").strip()
+        normalized = normalize_calibration_profile(
+            profile,
+            self.calibration_profiles.get(profile_id),
+        )
+        self.calibration_profiles[profile_id] = normalized
+        await self._async_save()
+        return normalized
+
+    async def async_remove_calibration_profile(self, profile_id: str) -> bool:
+        """Remove a reusable profile without changing existing config snapshots."""
+
+        removed = self.calibration_profiles.pop(profile_id, None) is not None
+        if removed:
+            await self._async_save()
+        return removed
+
+    def list_calibration_profiles(self) -> list[dict[str, Any]]:
+        """Return profiles newest first."""
+
+        return sorted(
+            self.calibration_profiles.values(),
+            key=lambda profile: float(profile.get("updated_at", 0)),
+            reverse=True,
+        )
+
+    async def _async_save(self) -> None:
+        await self.config_store.async_save(
+            {
+                "systems": self.configs,
+                "calibration_profiles": self.calibration_profiles,
+            }
+        )
 
     def get_config(self, fusion_id: str) -> dict[str, Any] | None:
         return self.configs.get(fusion_id)
