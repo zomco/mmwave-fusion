@@ -784,7 +784,22 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "frame_entity": frame_entity,
                 "calibration": calibration,
                 "coordinate_scale": float(radar.get("coordinate_scale", MODEL_COORDINATE_SCALE[model])),
-                "_coordinate_scale_explicit": "coordinate_scale" in radar,
+                # Whether the user pinned the scale, or we fell back to the
+                # model default and should keep auto-detecting from each
+                # entity's unit_of_measurement.
+                #
+                # This must survive a round trip through storage. Inferring it
+                # purely from `"coordinate_scale" in radar` looked right, but
+                # normalize_config *writes* coordinate_scale into its own
+                # output, so re-normalizing a stored config (which
+                # async_initialize does on every restart) flipped the flag to
+                # True and froze the scale at the model default. For a radar
+                # whose entities report cm while the model default assumes mm,
+                # that silently divided every fused coordinate by ten after
+                # each Home Assistant restart.
+                "_coordinate_scale_explicit": bool(
+                    radar.get("_coordinate_scale_explicit", "coordinate_scale" in radar)
+                ),
                 "frame_coordinate_scale": float(radar.get("frame_coordinate_scale", 1.0)),
                 "frame_stale_after_s": max(float(radar.get("frame_stale_after_s", 3.0)), 0.5),
                 "measurement_weight": max(float(radar.get("measurement_weight", 1.0)), 0.01),
