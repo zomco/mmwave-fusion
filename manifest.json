@@ -1,12 +1,17 @@
 {
   "domain": "mmwave_fusion",
   "name": "MMWave Fusion",
-  "codeowners": ["@zomco"],
-  "config_flow": false,
-  "dependencies": ["camera", "websocket_api"],
+  "codeowners": [
+    "@zomco"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "camera",
+    "websocket_api"
+  ],
   "documentation": "https://github.com/zomco/mmwave-card",
   "integration_type": "service",
   "iot_class": "local_push",
   "requirements": [],
-  "version": "0.2.0"
+  "version": "0.3.0"
 }

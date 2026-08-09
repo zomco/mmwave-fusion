@@ -6,24 +6,20 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from .const import DOMAIN, SIGNAL_SYSTEM_ADDED
 from .entity import FusionEntity
 
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    if discovery_info is None:
-        return
-
     coordinator = hass.data[DOMAIN]
     known: set[str] = set()
 
@@ -37,7 +33,9 @@ async def async_setup_platform(
     for fusion_id in coordinator.systems:
         _add(fusion_id)
 
-    async_dispatcher_connect(hass, SIGNAL_SYSTEM_ADDED, _add)
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_SYSTEM_ADDED, _add)
+    )
 
 
 class FusionOccupiedBinarySensor(FusionEntity, BinarySensorEntity):

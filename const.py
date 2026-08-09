@@ -23,6 +23,9 @@ SIGNAL_UPDATE = "mmwave_fusion_update"
 SIGNAL_SYSTEM_ADDED = "mmwave_fusion_system_added"
 SIGNAL_SYSTEM_REMOVED = "mmwave_fusion_system_removed"
 
+MANUFACTURER = "mmwave"
+MODEL = "Multi-radar fusion"
+
 
 # Values exposed by the current mmwave-card model adapters. Models that only
 # provide a range are intentionally excluded from spatial fusion.

@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MMWave 融合",
+        "description": "启用多雷达融合后端。雷达、区域和摄像头都在 MMWave 卡片里配置，这里无需填写任何内容。"
+      }
+    },
+    "abort": {
+      "already_configured": "MMWave 融合已配置。"
+    }
+  }
+}

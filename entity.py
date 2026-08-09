@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.core import callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
-from .const import DOMAIN, SIGNAL_SYSTEM_REMOVED, SIGNAL_UPDATE
+from .const import DOMAIN, MANUFACTURER, MODEL, SIGNAL_SYSTEM_REMOVED, SIGNAL_UPDATE
 
 
 class FusionEntity(Entity):
@@ -29,12 +30,16 @@ class FusionEntity(Entity):
         # breaks on upgrade.
         self._attr_name = name
         self._attr_unique_id = f"{DOMAIN}_{fusion_id}_{key}"
-        # No DeviceInfo on purpose. Device registry entries require a config
-        # entry, and this integration is YAML-only (config_flow: false), so a
-        # device would be silently dropped rather than created. Entities are
-        # still in the entity registry, so they can be renamed and assigned to
-        # an area individually; grouping them under one device per fusion
-        # system needs a config flow first.
+        # One device per fusion system, so a room's entities group together and
+        # can be assigned to an area in one move. This only takes effect
+        # because the integration now owns a config entry - the device registry
+        # refuses entries that are not tied to one.
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, fusion_id)},
+            name=f"MMWave Fusion {fusion_id}",
+            manufacturer=MANUFACTURER,
+            model=MODEL,
+        )
         self._payload: dict[str, Any] | None = None
         self._removed = False
 

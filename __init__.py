@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import voluptuous as vol
 
-from homeassistant.const import Platform
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.discovery import async_load_platform
+from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 from .coordinator import FusionCoordinator
@@ -23,21 +24,48 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
-async def async_setup(hass: HomeAssistant, config: cv.ConfigType) -> bool:
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Adopt a legacy `mmwave_fusion:` block into a config entry.
+
+    The integration used to be YAML-only. Existing installs keep working: the
+    block triggers a one-shot import flow, and the flow's unique id makes that
+    a no-op once the entry exists.
+    """
+    if DOMAIN in config:
+        hass.async_create_task(
+            hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": SOURCE_IMPORT}, data={}
+            )
+        )
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = FusionCoordinator(hass)
     await coordinator.async_initialize()
+    hass.data.setdefault(DOMAIN, coordinator)
     async_register_websocket_api(hass, coordinator)
 
-    # Loaded after async_initialize so the platforms see every system restored
-    # from storage; systems created later over the WebSocket API arrive through
-    # SIGNAL_SYSTEM_ADDED.
-    for platform in PLATFORMS:
-        hass.async_create_task(
-            async_load_platform(hass, platform, DOMAIN, {}, config)
-        )
+    # Forwarded after async_initialize so the platforms see every system
+    # restored from storage; systems created later over the WebSocket API
+    # arrive through SIGNAL_SYSTEM_ADDED.
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    async def async_shutdown(_: object) -> None:
+    # Config entries are not reliably unloaded when Home Assistant stops, and
+    # the trajectory store holds an open SQLite connection, so close it on the
+    # stop event as well as on unload.
+    async def _async_stop(_: object) -> None:
         await coordinator.async_shutdown()
 
-    hass.bus.async_listen_once("homeassistant_stop", async_shutdown)
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop)
+    )
     return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        coordinator: FusionCoordinator = hass.data.pop(DOMAIN)
+        await coordinator.async_shutdown()
+    return unloaded
