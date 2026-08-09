@@ -17,8 +17,12 @@ DEFAULT_POINT_FLUSH_S = 1.0
 EVENT_TYPE = "mmwave_fusion_event"
 SIGNAL_UPDATE = "mmwave_fusion_update"
 
-ENTITY_TARGET_COUNT = "sensor.mmwave_fusion_{fusion_id}_target_count"
-ENTITY_OCCUPIED = "binary_sensor.mmwave_fusion_{fusion_id}_occupied"
+# Fusion systems are created and destroyed at runtime through the WebSocket
+# API, so the entity platforms cannot enumerate them once at setup. These
+# signals let the platforms add and drop entities as systems come and go.
+SIGNAL_SYSTEM_ADDED = "mmwave_fusion_system_added"
+SIGNAL_SYSTEM_REMOVED = "mmwave_fusion_system_removed"
+
 
 # Values exposed by the current mmwave-card model adapters. Models that only
 # provide a range are intentionally excluded from spatial fusion.

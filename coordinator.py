@@ -27,11 +27,10 @@ from .const import (
     DEFAULT_POINT_FLUSH_S,
     DEFAULT_RATE_HZ,
     DEFAULT_TRACK_TTL_S,
-    DOMAIN,
-    ENTITY_OCCUPIED,
-    ENTITY_TARGET_COUNT,
     EVENT_TYPE,
     MODEL_COORDINATE_SCALE,
+    SIGNAL_SYSTEM_ADDED,
+    SIGNAL_SYSTEM_REMOVED,
     SIGNAL_UPDATE,
     SPATIAL_MODELS,
     STORAGE_KEY,
@@ -102,6 +101,7 @@ class FusionCoordinator:
         self.systems[fusion_id] = system
         self.configs[fusion_id] = normalized
         await system.async_start()
+        async_dispatcher_send(self.hass, SIGNAL_SYSTEM_ADDED, fusion_id)
         if persist:
             await self._async_save()
         return system.status()
@@ -117,7 +117,7 @@ class FusionCoordinator:
         if system is None:
             return False
         await system.async_stop()
-        system.remove_summary_states()
+        async_dispatcher_send(self.hass, SIGNAL_SYSTEM_REMOVED, fusion_id)
         await self._async_save()
         return True
 
@@ -206,7 +206,6 @@ class FusionSystem:
         self._radar_stats: dict[str, dict[str, int]] = {
             radar_id: {"observations": 0, "in_room": 0} for radar_id in self._radars
         }
-        self._last_summary_signature: tuple[object, ...] | None = None
 
     async def async_start(self) -> None:
         for radar_id, radar in self._radars.items():
@@ -542,7 +541,6 @@ class FusionSystem:
             "radars": self._radar_health(),
         }
         async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_{self.fusion_id}", payload)
-        self._publish_summary(payload)
 
     async def _record_event(self, event: dict[str, object]) -> None:
         metadata = event.setdefault("metadata", {})
@@ -686,49 +684,6 @@ class FusionSystem:
                 clip["event_id"],
                 clip["error"],
             )
-
-    @callback
-    def _publish_summary(self, payload: dict[str, object]) -> None:
-        tracks = payload["tracks"]
-        assert isinstance(tracks, list)
-        radars = payload["radars"]
-        assert isinstance(radars, list)
-        stable_health = tuple((radar["id"], radar["available"]) for radar in radars)
-        calibration_warnings = tuple(
-            str(radar["id"]) for radar in radars if radar.get("calibration_warning")
-        )
-        multi_source_targets = sum(len(track.get("sources", [])) >= 2 for track in tracks)
-        signature = (len(tracks), multi_source_targets, stable_health, calibration_warnings)
-        if signature == self._last_summary_signature:
-            return
-        self._last_summary_signature = signature
-        attributes = {
-            "friendly_name": f"MMWave Fusion {self.fusion_id} target count",
-            "fusion_id": self.fusion_id,
-            "online_radars": sum(1 for _, available in stable_health if available),
-            "radar_count": len(stable_health),
-            "multi_source_targets": multi_source_targets,
-            "calibration_warnings": list(calibration_warnings),
-        }
-        self.hass.states.async_set(
-            ENTITY_TARGET_COUNT.format(fusion_id=slugify(self.fusion_id)),
-            len(tracks),
-            attributes,
-        )
-        self.hass.states.async_set(
-            ENTITY_OCCUPIED.format(fusion_id=slugify(self.fusion_id)),
-            STATE_ON if tracks else "off",
-            {
-                "friendly_name": f"MMWave Fusion {self.fusion_id} occupied",
-                "fusion_id": self.fusion_id,
-                "device_class": "occupancy",
-            },
-        )
-
-    @callback
-    def remove_summary_states(self) -> None:
-        self.hass.states.async_remove(ENTITY_TARGET_COUNT.format(fusion_id=slugify(self.fusion_id)))
-        self.hass.states.async_remove(ENTITY_OCCUPIED.format(fusion_id=slugify(self.fusion_id)))
 
     def _radar_health(self) -> list[dict[str, object]]:
         health: list[dict[str, object]] = []
@@ -1026,12 +981,6 @@ def entity_coordinate_scale(radar: dict[str, Any], state: Any) -> float:
     if unit in {"m", "m/s"}:
         return 100.0
     return float(radar["coordinate_scale"])
-
-
-def slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9_]+", "_", value.lower()).strip("_")
-    return slug or "home"
-
 
 def redact_url_credentials(value: str) -> str:
     """Remove URL user-info before an exception is persisted or sent to the UI."""
