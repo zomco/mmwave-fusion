@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 DOMAIN = "mmwave_fusion"
+
+# WebSocket contract version between this integration and mmwave-card.
+#
+# The two ship as separate HACS packages and are versioned independently, so a
+# user can end up with any combination. Bump this when a command is added, or
+# when a request or reply field changes meaning; the card compares it against
+# the minimum it needs and says so plainly rather than half-working.
+API_VERSION = 1
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
 

@@ -5,8 +5,27 @@ picture: it ingests each radar's targets, transforms them into a shared floor
 plan, associates and tracks them across radars, scores the resulting
 trajectories, and persists events and clips.
 
-It is the backend half of [mmwave-card](https://github.com/zomco/mmwave-card);
-the card is what configures it.
+## Relationship to mmwave-card
+
+These are two packages with an asymmetric dependency, installed separately:
+
+| | Package | HACS category | Needed for |
+| --- | --- | --- | --- |
+| Frontend | [mmwave-card](https://github.com/zomco/mmwave-card) | plugin | Everything. Single-radar works with the card alone. |
+| Backend | mmwave-fusion (this) | integration | Multi-radar fusion only. **Experimental.** |
+
+The card is the only user interface; this integration ships no frontend of its
+own. It is configured entirely from the card, which is why its config flow asks
+for nothing.
+
+Install the card for single-radar use. Add this integration when you want
+multi-radar fusion: persisted trajectories, zone events and camera recording.
+Without it, the card still renders a fused view, but it fuses in the browser
+and nothing is stored.
+
+The two are versioned independently, so the integration stamps `api_version`
+onto every push and the card refuses to run against a backend older than it
+needs, saying so in the UI rather than half-working.
 
 ## Installation
 

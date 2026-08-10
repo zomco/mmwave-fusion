@@ -32,6 +32,7 @@ from .const import (
     EVENT_TYPE,
     MODEL_COORDINATE_SCALE,
     PRUNE_INTERVAL_S,
+    API_VERSION,
     SIGNAL_SYSTEM_ADDED,
     SIGNAL_SYSTEM_REMOVED,
     SIGNAL_UPDATE,
@@ -564,6 +565,9 @@ class FusionSystem:
             self.hass.bus.async_fire(EVENT_TYPE, fusion_event)
 
         payload = {
+            # Rides on every push so any card, including a non-admin viewer
+            # that never calls configure, can check it.
+            "api_version": API_VERSION,
             "fusion_id": self.fusion_id,
             "timestamp": now,
             "tracks": [track.as_dict() for track in result.tracks],

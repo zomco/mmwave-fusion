@@ -10,7 +10,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import DEFAULT_FUSION_ID, DOMAIN, SIGNAL_UPDATE
+from .const import API_VERSION, DEFAULT_FUSION_ID, DOMAIN, SIGNAL_UPDATE
 from .coordinator import FusionCoordinator
 
 
@@ -67,6 +67,9 @@ def ws_get_config(
     connection.send_result(
         msg["id"],
         {
+            # Lets the card detect a backend older than it needs and say so,
+            # rather than failing on a command or field that does not exist yet.
+            "api_version": API_VERSION,
             "config": coordinator.get_config(fusion_id),
             "status": coordinator.get_status(fusion_id),
         },
