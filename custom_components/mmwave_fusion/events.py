@@ -53,6 +53,22 @@ class ZoneEventEngine:
                 del self._states[key]
         return events
 
+    def occupancy(self) -> dict[str, int]:
+        """How many tracks are currently inside each zone.
+
+        Read straight off the state this engine already keeps to decide enter
+        and exit, so it cannot disagree with the events it emits — recomputing
+        point-in-polygon somewhere else would be a second implementation free to
+        drift. Zones with nobody in them are reported as 0 rather than omitted,
+        so an entity can tell "empty" from "this zone no longer exists".
+        """
+
+        counts = {str(zone["id"]): 0 for zone in self.zones}
+        for _track_id, zone_id in self._states:
+            if zone_id in counts:
+                counts[zone_id] += 1
+        return counts
+
     def _event(
         self,
         track: FusedTrack,

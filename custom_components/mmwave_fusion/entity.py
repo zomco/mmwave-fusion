@@ -53,6 +53,15 @@ class FusionEntity(Entity):
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"fusion_id": self._fusion_id}
 
+    @property
+    def _zone_occupancy(self) -> dict[str, int]:
+        """Per-zone head count from the last push, empty before the first one."""
+
+        if self._payload is None:
+            return {}
+        occupancy = self._payload.get("zone_occupancy")
+        return occupancy if isinstance(occupancy, dict) else {}
+
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
             async_dispatcher_connect(
