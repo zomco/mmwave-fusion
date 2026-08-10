@@ -12,7 +12,7 @@
   "documentation": "https://github.com/zomco/mmwave-fusion",
   "integration_type": "service",
   "iot_class": "local_push",
+  "issue_tracker": "https://github.com/zomco/mmwave-fusion/issues",
   "requirements": [],
-  "version": "0.3.0",
-  "issue_tracker": "https://github.com/zomco/mmwave-fusion/issues"
+  "version": "0.3.0"
 }
