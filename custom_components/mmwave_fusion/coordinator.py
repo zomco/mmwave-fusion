@@ -78,7 +78,13 @@ class FusionCoordinator:
         )
         if interrupted:
             _LOGGER.warning("Marked %s interrupted recording request(s) as failed", interrupted)
-        self._prune_task = self.hass.async_create_task(self._async_prune_loop())
+        # Background, not a plain task: _async_prune_loop never returns, and
+        # async_create_task registers it as startup work Home Assistant waits
+        # on. It logs "Something is blocking Home Assistant from wrapping up
+        # the start up phase" and names this coroutine, every boot.
+        self._prune_task = self.hass.async_create_background_task(
+            self._async_prune_loop(), "mmwave_fusion_prune"
+        )
         stored = await self.config_store.async_load() or {}
         profiles = stored.get("calibration_profiles", {})
         if isinstance(profiles, dict):
