@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from math import isfinite
 
 
@@ -59,7 +59,9 @@ def parse_target_frame(value: str) -> TargetFrame | None:
             x = _number(raw_target.get("x"))
             y = _number(raw_target.get("y"))
             z = _number(raw_target.get("z", 0.0))
-            speed = _number(raw_target.get("speed")) if raw_target.get("speed") is not None else None
+            speed = (
+                _number(raw_target.get("speed")) if raw_target.get("speed") is not None else None
+            )
         else:
             return None
         if x is None or y is None or z is None:

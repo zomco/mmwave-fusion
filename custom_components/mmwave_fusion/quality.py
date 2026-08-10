@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 from math import hypot
 from typing import Any
 from uuid import uuid4
@@ -69,7 +70,9 @@ class TrajectoryQualityEngine:
                 )
             )
             if history[0].timestamp < cutoff:
-                self._samples[track.track_id] = [sample for sample in history if sample.timestamp >= cutoff]
+                self._samples[track.track_id] = [
+                    sample for sample in history if sample.timestamp >= cutoff
+                ]
 
     def add_zone_events(self, events: list[dict[str, object]]) -> None:
         """Associate raw zone transitions with their track histories."""
@@ -77,7 +80,9 @@ class TrajectoryQualityEngine:
         for event in events:
             self._events.setdefault(str(event["track_id"]), []).append(event)
 
-    def finish(self, track_id: str, now: float) -> tuple[dict[str, object], TrajectoryAssessment] | None:
+    def finish(
+        self, track_id: str, now: float
+    ) -> tuple[dict[str, object], TrajectoryAssessment] | None:
         """Finalize one track and return a trajectory event plus assessment."""
 
         samples = self._samples.pop(track_id, [])
@@ -87,7 +92,9 @@ class TrajectoryQualityEngine:
         assessment = assess_trajectory(samples, events, self.room_w, self.room_d, self.settings)
         observed = [sample for sample in samples if sample.sources]
         endpoint = observed[-1] if observed else samples[-1]
-        zone_id = next((str(event["zone_id"]) for event in events if event["event_type"] == "enter"), "room")
+        zone_id = next(
+            (str(event["zone_id"]) for event in events if event["event_type"] == "enter"), "room"
+        )
         start_ts = float(assessment.metrics.get("start_ts", samples[0].timestamp))
         end_ts = float(assessment.metrics.get("end_ts", now))
         event_type = "traverse" if assessment.eligible else "trajectory"
@@ -133,18 +140,17 @@ def assess_trajectory(
     first, last = observed[0], observed[-1]
     duration = max(last.timestamp - first.timestamp, 0.0)
     displacement = hypot(last.x - first.x, last.y - first.y)
-    raw_steps = [
-        hypot(right.x - left.x, right.y - left.y)
-        for left, right in zip(observed, observed[1:])
-    ]
-    steps = [hypot(right.x - left.x, right.y - left.y) for left, right in zip(smoothed, smoothed[1:])]
+    raw_steps = [hypot(right.x - left.x, right.y - left.y) for left, right in pairwise(observed)]
+    steps = [hypot(right.x - left.x, right.y - left.y) for left, right in pairwise(smoothed)]
     path_length = sum(steps)
     path_efficiency = displacement / path_length if path_length > 0 else 0.0
-    gaps = [right.timestamp - left.timestamp for left, right in zip(observed, observed[1:])]
+    gaps = [right.timestamp - left.timestamp for left, right in pairwise(observed)]
     max_gap = max(gaps, default=0.0)
     max_jump = max(raw_steps, default=0.0)
     observed_ratio = len(observed) / max(len(samples), 1)
-    inside_ratio = sum(0 <= sample.x <= room_w and 0 <= sample.y <= room_d for sample in observed) / len(observed)
+    inside_ratio = sum(
+        0 <= sample.x <= room_w and 0 <= sample.y <= room_d for sample in observed
+    ) / len(observed)
     dual_ratio = sum(len(sample.sources) >= 2 for sample in observed) / len(observed)
     source_count = len({source for sample in observed for source in sample.sources})
     enter_count = sum(event["event_type"] == "enter" for event in events)
@@ -166,7 +172,7 @@ def assess_trajectory(
         + 10 * _clamp(path_efficiency / 0.7)
     )
     kinematics = round(10 * _clamp(1.0 - max_jump / max(float(settings["max_jump_cm"]), 1.0)))
-    sensor_agreement = round(5 * _clamp((source_count - 1)) + 5 * _clamp(dual_ratio / 0.25))
+    sensor_agreement = round(5 * _clamp(source_count - 1) + 5 * _clamp(dual_ratio / 0.25))
     support = round(5 * _clamp(duration / 10.0))
     bounce_penalty = min(max(transition_count - 2, 0) * 3, 15)
     outside_penalty = round(10 * _clamp((float(settings["min_inside_ratio"]) - inside_ratio) / 0.5))
@@ -221,7 +227,9 @@ def assess_trajectory(
         hard_failures.append("unstable_boundary_crossing")
 
     eligible = not hard_failures and score >= int(settings["min_score"])
-    reason = hard_failures[0] if hard_failures else "eligible" if eligible else "below_score_threshold"
+    reason = (
+        hard_failures[0] if hard_failures else "eligible" if eligible else "below_score_threshold"
+    )
     return TrajectoryAssessment(score, eligible, reason, breakdown, metrics)
 
 
