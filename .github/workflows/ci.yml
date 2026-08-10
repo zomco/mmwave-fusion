@@ -29,10 +29,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
 
-  # Required before HACS will list the integration.
+  # Required before HACS will list the integration. Reports rather than blocks,
+  # because two of its nine checks cannot pass from inside this repository yet:
+  #
+  #   topics  — the repository has none. A settings change, not a code change.
+  #   brands  — an integration must be registered in home-assistant/brands,
+  #             which means a PR to that repository and waiting for review.
+  #             mmwave-card is exempt only because brands applies to
+  #             integrations, not to frontend plugins.
+  #
+  # Leaving it blocking would fail every pull request here until an external
+  # review lands. Leaving it out entirely would lose the checklist. So it runs,
+  # it reports, and this comment records what has to happen before the
+  # continue-on-error comes back off.
   hacs:
     name: HACS validation
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: hacs/action@main
