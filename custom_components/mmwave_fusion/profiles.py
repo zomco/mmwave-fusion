@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from math import isfinite
 import time
+from math import isfinite
 from typing import Any
 
 from .const import SPATIAL_MODELS
-
 
 CALIBRATION_KEYS = ("radar_x", "radar_y", "radar_z", "yaw", "pitch", "roll")
 
@@ -42,7 +41,9 @@ def normalize_calibration_profile(
     calibration["polygon"] = polygon if isinstance(polygon, list) else []
     residual = raw.get("residual_cm")
     if residual is not None and (
-        not isinstance(residual, (int, float)) or not isfinite(float(residual)) or float(residual) < 0
+        not isinstance(residual, (int, float))
+        or not isfinite(float(residual))
+        or float(residual) < 0
     ):
         raise ValueError("residual_cm must be a non-negative finite number")
     revision = int(previous.get("revision", 0)) + 1 if previous else 1

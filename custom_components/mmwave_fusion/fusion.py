@@ -172,7 +172,9 @@ class FusionEngine:
             track.sources = cluster.radar_ids
             track.seen_sources.update(cluster.radar_ids)
             track.hits += max(1, len(cluster.radar_ids))
-            confidence_ceiling = 1.0 if len(track.seen_sources) >= self.min_confirm_sources else 0.74
+            confidence_ceiling = (
+                1.0 if len(track.seen_sources) >= self.min_confirm_sources else 0.74
+            )
             track.confidence = min(
                 confidence_ceiling,
                 track.confidence + 0.1 + 0.08 * source_bonus,
@@ -208,8 +210,7 @@ class FusionEngine:
                 updated_at=now,
                 hits=hits,
                 confirmed=(
-                    hits >= self.confirm_hits
-                    and len(cluster.radar_ids) >= self.min_confirm_sources
+                    hits >= self.confirm_hits and len(cluster.radar_ids) >= self.min_confirm_sources
                 ),
             )
             self._tracks[track.track_id] = track
@@ -244,7 +245,9 @@ class FusionEngine:
                 best.observations.append(observation)
         return clusters
 
-    def _associate(self, clusters: list[_Cluster], prediction_dt: dict[str, float]) -> list[tuple[str, int]]:
+    def _associate(
+        self, clusters: list[_Cluster], prediction_dt: dict[str, float]
+    ) -> list[tuple[str, int]]:
         track_ids = list(self._tracks)
         if not track_ids or not clusters:
             return []
@@ -256,10 +259,14 @@ class FusionEngine:
         costs = [[0.0] * size for _ in range(size)]
         for track_index, track_id in enumerate(track_ids):
             track = self._tracks[track_id]
-            dynamic_gate = self.association_gate_cm + hypot(track.vx, track.vy) * prediction_dt.get(track_id, 0.0)
+            dynamic_gate = self.association_gate_cm + hypot(track.vx, track.vy) * prediction_dt.get(
+                track_id, 0.0
+            )
             for cluster_index, cluster in enumerate(clusters):
                 distance = hypot(track.x - cluster.x, track.y - cluster.y)
-                costs[track_index][cluster_index] = distance / dynamic_gate if distance <= dynamic_gate else invalid_cost
+                costs[track_index][cluster_index] = (
+                    distance / dynamic_gate if distance <= dynamic_gate else invalid_cost
+                )
             for dummy_track_column in range(cluster_count, size):
                 costs[track_index][dummy_track_column] = unmatched_cost
         for dummy_cluster_row in range(track_count, size):
@@ -319,7 +326,11 @@ def _minimum_cost_assignment(costs: list[list[float]]) -> list[tuple[int, int]]:
             for column in range(1, column_count + 1):
                 if used[column]:
                     continue
-                reduced = matrix[current_row - 1][column - 1] - row_potential[current_row] - column_potential[column]
+                reduced = (
+                    matrix[current_row - 1][column - 1]
+                    - row_potential[current_row]
+                    - column_potential[column]
+                )
                 if reduced < minimum[column]:
                     minimum[column] = reduced
                     previous_column[column] = current_column
@@ -342,13 +353,19 @@ def _minimum_cost_assignment(costs: list[list[float]]) -> list[tuple[int, int]]:
             if current_column == 0:
                 break
 
-    assignment = [(column_match[column] - 1, column - 1) for column in range(1, column_count + 1) if column_match[column]]
+    assignment = [
+        (column_match[column] - 1, column - 1)
+        for column in range(1, column_count + 1)
+        if column_match[column]
+    ]
     if transposed:
         return [(column, row) for row, column in assignment]
     return assignment
 
 
-def transform_point(raw_x: float, raw_y: float, raw_z: float, calibration: dict[str, object]) -> tuple[float, float, float]:
+def transform_point(
+    raw_x: float, raw_y: float, raw_z: float, calibration: dict[str, object]
+) -> tuple[float, float, float]:
     """Apply the same yaw/pitch/roll + translation convention as mmwave-card."""
 
     yaw = float(calibration.get("yaw", 0.0)) * pi / 180.0

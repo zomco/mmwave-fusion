@@ -1,0 +1,38 @@
+# Home Assistant 2024.1 is the floor declared in hacs.json, which runs on
+# Python 3.11.
+target-version = "py311"
+line-length = 100
+
+[lint]
+# Ruff's default (E4/E7/E9 + F) plus the groups that catch real problems in an
+# integration: undefined names, bad datetime handling, async slip-ups, and the
+# import ordering that otherwise drifts file by file.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "BLE", "ASYNC", "DTZ", "RUF", "TRY"]
+
+ignore = [
+    # "Prefer TypeError for invalid type" — wrong for this codebase, and
+    # actively harmful. normalize_config() and the profile parser raise
+    # ValueError for malformed input, and three call sites catch exactly that:
+    # coordinator.py's config load and two websocket_api handlers, which turn it
+    # into a clean error for the card. Switching to TypeError would slip past
+    # all three and surface as an unhandled exception in the frontend instead.
+    "TRY004",
+    # Long messages passed straight to raise. The strings say which key was
+    # wrong and are read by whoever is editing YAML, so hoisting them into
+    # named constants would move the useful part away from the check.
+    "TRY003",
+    # This integration re-raises with context deliberately in places where the
+    # original error is the useful one to log.
+    "TRY400",
+    # "Abstract raise to an inner function". Both sites raise inside a try so
+    # that a failed precondition — no HLS stream, a zero-byte recording — lands
+    # in the same handler as a genuine failure and is reported the same way.
+    # Hoisting the raise into a helper would split that logic in two to satisfy
+    # a rule about where the keyword sits.
+    "TRY301",
+]
+
+# BLE001 (blind `except Exception`) stays enabled. There is exactly one site,
+# and it carries an inline `# noqa: BLE001` explaining that one failing camera
+# must not stop radar fusion. Keeping the rule on means the next such catch has
+# to justify itself in the same way, rather than inheriting a file-wide pass.

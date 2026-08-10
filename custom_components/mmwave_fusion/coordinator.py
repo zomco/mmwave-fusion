@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from datetime import datetime
 import logging
-from math import ceil
-from pathlib import Path
 import re
 import time
+from collections.abc import Callable
+from datetime import datetime
+from math import ceil
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -20,11 +20,12 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    API_VERSION,
     DEFAULT_ASSOCIATION_GATE_CM,
+    DEFAULT_EVENT_RETENTION_DAYS,
     DEFAULT_FRAME_DEBOUNCE_S,
     DEFAULT_FUSION_ID,
     DEFAULT_MERGE_GATE_CM,
-    DEFAULT_EVENT_RETENTION_DAYS,
     DEFAULT_POINT_FLUSH_S,
     DEFAULT_POINT_RETENTION_DAYS,
     DEFAULT_RATE_HZ,
@@ -32,7 +33,6 @@ from .const import (
     EVENT_TYPE,
     MODEL_COORDINATE_SCALE,
     PRUNE_INTERVAL_S,
-    API_VERSION,
     SIGNAL_SYSTEM_ADDED,
     SIGNAL_SYSTEM_REMOVED,
     SIGNAL_UPDATE,
@@ -49,8 +49,8 @@ from .fusion import (
     observations_in_room,
     transform_point,
 )
-from .quality import TrajectoryQualityEngine
 from .profiles import normalize_calibration_profile
+from .quality import TrajectoryQualityEngine
 from .storage import TrajectoryStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -62,7 +62,9 @@ class FusionCoordinator:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self.config_store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self.trajectory_store = TrajectoryStore(hass.config.path(".storage", "mmwave_fusion.sqlite"))
+        self.trajectory_store = TrajectoryStore(
+            hass.config.path(".storage", "mmwave_fusion.sqlite")
+        )
         self.systems: dict[str, FusionSystem] = {}
         self.configs: dict[str, dict[str, Any]] = {}
         self.calibration_profiles: dict[str, dict[str, Any]] = {}
@@ -90,11 +92,17 @@ class FusionCoordinator:
             for fusion_id, config in systems.items():
                 if isinstance(config, dict):
                     try:
-                        await self.async_configure({**config, "fusion_id": fusion_id}, persist=False)
+                        await self.async_configure(
+                            {**config, "fusion_id": fusion_id}, persist=False
+                        )
                     except ValueError as error:
-                        _LOGGER.error("Ignoring invalid stored fusion system %s: %s", fusion_id, error)
+                        _LOGGER.error(
+                            "Ignoring invalid stored fusion system %s: %s", fusion_id, error
+                        )
 
-    async def async_configure(self, config: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
+    async def async_configure(
+        self, config: dict[str, Any], *, persist: bool = True
+    ) -> dict[str, Any]:
         normalized = normalize_config(config)
         fusion_id = normalized["fusion_id"]
         if self.configs.get(fusion_id) == normalized and fusion_id in self.systems:
@@ -134,11 +142,13 @@ class FusionCoordinator:
                 if any(removed.values()):
                     _LOGGER.info(
                         "Pruned history: %s track points, %s tracks, %s events",
-                        removed["track_points"], removed["tracks"], removed["events"],
+                        removed["track_points"],
+                        removed["tracks"],
+                        removed["events"],
                     )
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - a prune failure must not stop fusion
+            except Exception:
                 _LOGGER.exception("Trajectory history prune failed")
             await asyncio.sleep(PRUNE_INTERVAL_S)
 
@@ -198,7 +208,9 @@ class FusionCoordinator:
 
 
 class FusionSystem:
-    def __init__(self, hass: HomeAssistant, storage: TrajectoryStore, config: dict[str, Any]) -> None:
+    def __init__(
+        self, hass: HomeAssistant, storage: TrajectoryStore, config: dict[str, Any]
+    ) -> None:
         self.hass = hass
         self.storage = storage
         self.config = config
@@ -352,7 +364,7 @@ class FusionSystem:
                 stream.dynamic_stream_settings.preload_stream = previous_preload
                 if created_provider and not previous_preload:
                     await stream.remove_provider(provider)
-            except Exception:  # noqa: BLE001 - shutdown must continue
+            except Exception:
                 _LOGGER.exception("Unable to stop HA memory lookback buffer for %s", entity_id)
         self._camera_buffers.clear()
 
@@ -392,7 +404,11 @@ class FusionSystem:
         presence_entity = radar.get("presence_entity")
         if presence_entity:
             presence = self.hass.states.get(str(presence_entity))
-            if presence is None or presence.state in (STATE_UNAVAILABLE, STATE_UNKNOWN) or presence.state != STATE_ON:
+            if (
+                presence is None
+                or presence.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+                or presence.state != STATE_ON
+            ):
                 return
 
         signature: list[str] = []
@@ -427,10 +443,14 @@ class FusionSystem:
                 if speed_state is not None:
                     signature.append(speed_state.last_updated.isoformat())
                     try:
-                        speed = abs(float(speed_state.state)) * entity_coordinate_scale(radar, speed_state)
+                        speed = abs(float(speed_state.state)) * entity_coordinate_scale(
+                            radar, speed_state
+                        )
                     except (TypeError, ValueError):
                         speed = None
-            timestamp = max(timestamp, x_state.last_updated.timestamp(), y_state.last_updated.timestamp())
+            timestamp = max(
+                timestamp, x_state.last_updated.timestamp(), y_state.last_updated.timestamp()
+            )
             x, y, _ = transform_point(raw_x, raw_y, raw_z, calibration)
             observations.append(
                 Observation(
@@ -472,7 +492,9 @@ class FusionSystem:
         timestamp = state.last_updated.timestamp()
         calibration = radar["calibration"]
         for slot, target in enumerate(frame.targets):
-            x, y, _ = transform_point(target.x * scale, target.y * scale, target.z * scale, calibration)
+            x, y, _ = transform_point(
+                target.x * scale, target.y * scale, target.z * scale, calibration
+            )
             self._pending.append(
                 Observation(
                     radar_id=radar_id,
@@ -496,7 +518,7 @@ class FusionSystem:
                 await self._step()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - keep the long-running fusion task alive
+            except Exception:
                 _LOGGER.exception("Fusion step failed for %s", self.fusion_id)
             elapsed = time.monotonic() - started_at
             await asyncio.sleep(max(interval - elapsed, 0.01))
@@ -598,10 +620,16 @@ class FusionSystem:
             if event["event_type"] not in camera["event_types"]:
                 decision["status"] = "event_type_filtered"
                 continue
-            recording_key = (str(camera["entity_id"]), str(event["zone_id"]), str(event["event_type"]))
+            recording_key = (
+                str(camera["entity_id"]),
+                str(event["zone_id"]),
+                str(event["event_type"]),
+            )
             event_timestamp = float(event["timestamp"])
             last_recording = self._last_camera_recordings.get(recording_key)
-            if last_recording is not None and event_timestamp - last_recording < int(camera["cooldown_s"]):
+            if last_recording is not None and event_timestamp - last_recording < int(
+                camera["cooldown_s"]
+            ):
                 decision["status"] = "cooldown"
                 decision["retry_after_s"] = round(
                     int(camera["cooldown_s"]) - (event_timestamp - last_recording),
@@ -614,9 +642,17 @@ class FusionSystem:
             lookback = min(requested_lookback, int(camera["buffer_seconds"]))
             duration = int(camera["duration"])
             safe_camera = re.sub(r"[^a-zA-Z0-9_-]+", "_", entity_id)
-            date_path = datetime.fromtimestamp(float(event["timestamp"])).strftime("%Y-%m-%d")
+            # Local time on purpose, hence the noqa. This names a folder someone
+            # browses under /media, and they expect their own calendar day. Under
+            # UTC, every clip after 16:00 in a UTC+8 house would file itself under
+            # tomorrow.
+            date_path = datetime.fromtimestamp(  # noqa: DTZ006
+                float(event["timestamp"])
+            ).strftime("%Y-%m-%d")
             clip_id = uuid4().hex
-            relative_path = f"mmwave_fusion/{self.fusion_id}/{date_path}/{event['event_id']}_{safe_camera}.mp4"
+            relative_path = (
+                f"mmwave_fusion/{self.fusion_id}/{date_path}/{event['event_id']}_{safe_camera}.mp4"
+            )
             filename = f"/media/{relative_path}"
             now = time.time()
             clip = {
@@ -635,7 +671,9 @@ class FusionSystem:
                 "error": None,
             }
             try:
-                await self.hass.async_add_executor_job(Path(filename).parent.mkdir, 0o755, True, True)
+                await self.hass.async_add_executor_job(
+                    Path(filename).parent.mkdir, 0o755, True, True
+                )
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
                 self._last_camera_recordings[recording_key] = event_timestamp
                 decision.update(
@@ -652,14 +690,16 @@ class FusionSystem:
                 )
                 self._clip_tasks.add(task)
                 task.add_done_callback(self._clip_tasks.discard)
-            except Exception as error:  # noqa: BLE001 - one camera must not stop fusion
+            except Exception as error:
                 clip["status"] = "failed"
                 clip["updated_at"] = time.time()
                 clip["error"] = redact_url_credentials(str(error))[-500:]
                 decision["status"] = "failed"
                 decision["error"] = clip["error"]
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                _LOGGER.exception("Unable to request recording from %s for event %s", entity_id, event["event_id"])
+                _LOGGER.exception(
+                    "Unable to request recording from %s for event %s", entity_id, event["event_id"]
+                )
 
     async def _record_live_clip(
         self,
@@ -707,7 +747,7 @@ class FusionSystem:
             clip["error"] = "Recording cancelled before completion"
             await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
             raise
-        except Exception as error:  # noqa: BLE001 - recording failure must not stop fusion
+        except Exception as error:
             clip["status"] = "failed"
             clip["updated_at"] = time.time()
             clip["error"] = redact_url_credentials(str(error))[-500:]
@@ -723,7 +763,11 @@ class FusionSystem:
         health: list[dict[str, object]] = []
         now = time.time()
         for radar_id, radar in self._radars.items():
-            entity_id = radar.get("frame_entity") or radar.get("presence_entity") or radar["targets"][0]["x_entity"]
+            entity_id = (
+                radar.get("frame_entity")
+                or radar.get("presence_entity")
+                or radar["targets"][0]["x_entity"]
+            )
             state = self.hass.states.get(str(entity_id))
             age_s = now - state.last_updated.timestamp() if state is not None else None
             stale = bool(
@@ -735,9 +779,7 @@ class FusionSystem:
             in_room_count = int(stats["in_room"])
             in_room_ratio = in_room_count / observation_count if observation_count else None
             calibration_warning = bool(
-                observation_count >= 100
-                and in_room_ratio is not None
-                and in_room_ratio < 0.2
+                observation_count >= 100 and in_room_ratio is not None and in_room_ratio < 0.2
             )
             health.append(
                 {
@@ -770,9 +812,7 @@ class FusionSystem:
                 len(track.sources) >= 2 for track in self._latest_tracks
             ),
             "calibration_warnings": [
-                radar["id"]
-                for radar in self._radar_health()
-                if radar.get("calibration_warning")
+                radar["id"] for radar in self._radar_health() if radar.get("calibration_warning")
             ],
         }
 
@@ -797,7 +837,9 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         radar_ids.add(radar_id)
         model = str(radar.get("radar_model") or radar.get("model") or "")
         if model not in SPATIAL_MODELS:
-            raise ValueError(f"Radar {radar_id} model {model!r} does not provide supported spatial coordinates")
+            raise ValueError(
+                f"Radar {radar_id} model {model!r} does not provide supported spatial coordinates"
+            )
         targets = normalize_targets(radar)
         frame_entity = str(radar.get("frame_entity") or "").strip() or None
         if not targets and not frame_entity:
@@ -817,7 +859,9 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "targets": targets,
                 "frame_entity": frame_entity,
                 "calibration": calibration,
-                "coordinate_scale": float(radar.get("coordinate_scale", MODEL_COORDINATE_SCALE[model])),
+                "coordinate_scale": float(
+                    radar.get("coordinate_scale", MODEL_COORDINATE_SCALE[model])
+                ),
                 # Whether the user pinned the scale, or we fell back to the
                 # model default and should keep auto-detecting from each
                 # entity's unit_of_measurement.
@@ -857,7 +901,14 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         ):
             raise ValueError(f"Zone {zone_id} polygon points must contain numeric x/y values")
         zone_ids.add(zone_id)
-        zones.append({**raw_zone, "id": zone_id, "polygon": polygon, "dwell_s": float(raw_zone.get("dwell_s", 0.0))})
+        zones.append(
+            {
+                **raw_zone,
+                "id": zone_id,
+                "polygon": polygon,
+                "dwell_s": float(raw_zone.get("dwell_s", 0.0)),
+            }
+        )
 
     cameras: list[dict[str, Any]] = []
     legacy_camera_keys = {
@@ -883,9 +934,7 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             )
         requested_source = str(raw_camera.get("recording_source") or "ha_live").lower()
         if requested_source not in {"ha_live", "hikvision_sd", "hikvision_nvr"}:
-            raise ValueError(
-                f"Camera {raw_camera['entity_id']} recording_source must be ha_live"
-            )
+            raise ValueError(f"Camera {raw_camera['entity_id']} recording_source must be ha_live")
         legacy_source = requested_source in {"hikvision_sd", "hikvision_nvr"}
         if legacy_source:
             _LOGGER.warning(
@@ -893,8 +942,8 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 raw_camera["entity_id"],
                 requested_source,
             )
-        raw_event_types = ["traverse"] if legacy_source else list(
-            raw_camera.get("event_types") or ["traverse"]
+        raw_event_types = (
+            ["traverse"] if legacy_source else list(raw_camera.get("event_types") or ["traverse"])
         )
         unknown_event_types = set(raw_event_types) - allowed_event_types
         if unknown_event_types:
@@ -923,13 +972,13 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
 
     raw_fusion = dict(config.get("fusion") or {})
     default_track_ttl = (
-        3.0
-        if any(radar["radar_model"] == "r60abd1" for radar in radars)
-        else DEFAULT_TRACK_TTL_S
+        3.0 if any(radar["radar_model"] == "r60abd1" for radar in radars) else DEFAULT_TRACK_TTL_S
     )
     fusion = {
         "rate_hz": min(max(float(raw_fusion.get("rate_hz", DEFAULT_RATE_HZ)), 1.0), 30.0),
-        "association_gate_cm": float(raw_fusion.get("association_gate_cm", DEFAULT_ASSOCIATION_GATE_CM)),
+        "association_gate_cm": float(
+            raw_fusion.get("association_gate_cm", DEFAULT_ASSOCIATION_GATE_CM)
+        ),
         "merge_gate_cm": float(raw_fusion.get("merge_gate_cm", DEFAULT_MERGE_GATE_CM)),
         "track_ttl_s": float(raw_fusion.get("track_ttl_s", default_track_ttl)),
         "confirm_hits": max(int(raw_fusion.get("confirm_hits", 2)), 1),
@@ -990,7 +1039,11 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_targets(radar: dict[str, Any]) -> list[dict[str, str]]:
     if isinstance(radar.get("targets"), list):
-        return [dict(target) for target in radar["targets"] if target.get("x_entity") and target.get("y_entity")]
+        return [
+            dict(target)
+            for target in radar["targets"]
+            if target.get("x_entity") and target.get("y_entity")
+        ]
     targets: list[dict[str, str]] = []
     for index in range(1, 4):
         x_entity = radar.get(f"target_{index}_x_entity")
@@ -1013,7 +1066,9 @@ def radar_entity_ids(radar: dict[str, Any]) -> set[str]:
     if radar.get("frame_entity"):
         result.add(str(radar["frame_entity"]))
     for target in radar["targets"]:
-        result.update(str(value) for key, value in target.items() if key.endswith("_entity") and value)
+        result.update(
+            str(value) for key, value in target.items() if key.endswith("_entity") and value
+        )
     return result
 
 
@@ -1030,6 +1085,7 @@ def entity_coordinate_scale(radar: dict[str, Any], state: Any) -> float:
     if unit in {"m", "m/s"}:
         return 100.0
     return float(radar["coordinate_scale"])
+
 
 def redact_url_credentials(value: str) -> str:
     """Remove URL user-info before an exception is persisted or sent to the UI."""

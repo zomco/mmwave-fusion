@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sqlite3
-from threading import Lock
 import time
-from typing import Iterable
+from collections.abc import Iterable
+from pathlib import Path
+from threading import Lock
 
 from .fusion import FusedTrack
 
@@ -85,7 +85,9 @@ class TrajectoryStore:
                 CREATE INDEX IF NOT EXISTS idx_clips_event ON clips(event_id);
                 """
             )
-            self._ensure_column(self._connection, "clips", "provider", "TEXT NOT NULL DEFAULT 'ha_live'")
+            self._ensure_column(
+                self._connection, "clips", "provider", "TEXT NOT NULL DEFAULT 'ha_live'"
+            )
             self._ensure_column(self._connection, "clips", "updated_at", "REAL")
             self._ensure_column(self._connection, "clips", "completed_at", "REAL")
             self._ensure_column(self._connection, "clips", "file_size", "INTEGER")
@@ -102,7 +104,12 @@ class TrajectoryStore:
         with self._lock, self._require_connection() as connection:
             connection.execute(
                 "INSERT OR IGNORE INTO tracks(track_id, fusion_id, start_ts, metadata) VALUES (?, ?, ?, ?)",
-                (track.track_id, fusion_id, track.started_at, json.dumps({"sources": track.sources})),
+                (
+                    track.track_id,
+                    fusion_id,
+                    track.started_at,
+                    json.dumps({"sources": track.sources}),
+                ),
             )
 
     def end_tracks(self, track_ids: Iterable[str], end_ts: float) -> None:
@@ -250,7 +257,9 @@ class TrajectoryStore:
             ).rowcount
         return removed
 
-    def query_events(self, fusion_id: str, limit: int = 100, before: float | None = None) -> list[dict[str, object]]:
+    def query_events(
+        self, fusion_id: str, limit: int = 100, before: float | None = None
+    ) -> list[dict[str, object]]:
         sql = """
             SELECT e.*, c.clip_id, c.camera_entity_id,
                    CASE WHEN c.status = 'ready' THEN c.path END AS clip_path,
@@ -286,13 +295,17 @@ class TrajectoryStore:
 
     def query_track(self, track_id: str, limit: int = 5000) -> list[dict[str, object]]:
         with self._lock:
-            rows = self._require_connection().execute(
-                """
+            rows = (
+                self._require_connection()
+                .execute(
+                    """
                 SELECT ts, x, y, vx, vy, confidence, sources
                 FROM track_points WHERE track_id = ? ORDER BY ts LIMIT ?
                 """,
-                (track_id, min(max(limit, 1), 20000)),
-            ).fetchall()
+                    (track_id, min(max(limit, 1), 20000)),
+                )
+                .fetchall()
+            )
         return [dict(row) for row in rows]
 
     def _require_connection(self) -> sqlite3.Connection:
@@ -301,7 +314,9 @@ class TrajectoryStore:
         return self._connection
 
     @staticmethod
-    def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    def _ensure_column(
+        connection: sqlite3.Connection, table: str, column: str, definition: str
+    ) -> None:
         columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

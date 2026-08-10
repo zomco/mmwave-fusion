@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from .const import DOMAIN
@@ -22,9 +21,7 @@ from .const import DOMAIN
 class MMWaveFusionConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         # One hub is enough; everything else is configured from the card.
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()

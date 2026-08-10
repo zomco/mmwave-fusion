@@ -33,9 +33,7 @@ async def async_setup_entry(
     for fusion_id in coordinator.systems:
         _add(fusion_id)
 
-    entry.async_on_unload(
-        async_dispatcher_connect(hass, SIGNAL_SYSTEM_ADDED, _add)
-    )
+    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_SYSTEM_ADDED, _add))
 
 
 class FusionOccupiedBinarySensor(FusionEntity, BinarySensorEntity):

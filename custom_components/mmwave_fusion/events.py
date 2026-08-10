@@ -38,7 +38,13 @@ class ZoneEventEngine:
                     events.append(self._event(track, zone_id, "exit", now))
                     continue
                 dwell_s = float(zone.get("dwell_s", 0.0))
-                if inside and state is not None and dwell_s > 0 and not state.dwell_fired and now - state.entered_at >= dwell_s:
+                if (
+                    inside
+                    and state is not None
+                    and dwell_s > 0
+                    and not state.dwell_fired
+                    and now - state.entered_at >= dwell_s
+                ):
                     state.dwell_fired = True
                     events.append(self._event(track, zone_id, "dwell", now, {"dwell_s": dwell_s}))
 
