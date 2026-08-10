@@ -601,6 +601,11 @@ class FusionSystem:
             "tracks": [track.as_dict() for track in result.tracks],
             "events": emitted_events,
             "radars": self._radar_health(),
+            # Per-zone occupancy rides along on every push so the zone entities
+            # can be plain consumers of it, rather than each recomputing
+            # point-in-polygon and being free to disagree with the enter/exit
+            # events emitted above.
+            "zone_occupancy": self.events.occupancy(),
         }
         async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_{self.fusion_id}", payload)
 
