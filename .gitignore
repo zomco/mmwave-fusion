@@ -1,0 +1,4 @@
+# Home Assistant runs this integration straight from a bind mount during
+# development, so it writes bytecode back into the working tree.
+__pycache__/
+*.py[cod]
