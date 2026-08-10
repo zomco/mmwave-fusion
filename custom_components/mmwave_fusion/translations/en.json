@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MMWave Fusion",
+        "description": "Sets up the multi-radar fusion backend. Radars, zones and cameras are configured from the MMWave card itself, so there is nothing to fill in here."
+      }
+    },
+    "abort": {
+      "already_configured": "MMWave Fusion is already set up."
+    }
+  }
+}
