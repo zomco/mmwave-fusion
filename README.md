@@ -235,6 +235,40 @@ exactly the people it is meant to serve.
 
 ---
 
+## Blueprints
+
+Two automation blueprints ship in
+[`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion).
+Import either by URL from **Settings → Automations & scenes → Blueprints →
+Import blueprint**.
+
+### Light follows zone presence
+
+[`zone_presence_light.yaml`](blueprints/automation/mmwave_fusion/zone_presence_light.yaml)
+
+Turns a light on while a zone is occupied and off once it is empty.
+
+This is not the stock motion-light blueprint with a different sensor. A PIR
+reports *movement*, so every motion-light automation needs a timeout, and every
+timeout is a compromise between dying on someone who is reading and burning for
+ten minutes after they leave. A fused zone reports *presence*, so there is
+nothing to guess. The grace period exists to ride out a single dropped frame,
+not to estimate how long a person might sit still — needing more than a minute
+of it means there is a calibration problem being worked around.
+
+### Notify on a scored crossing
+
+[`traverse_notification.yaml`](blueprints/automation/mmwave_fusion/traverse_notification.yaml)
+
+Fires on a `traverse` event: a complete, well-observed path through a zone, as
+judged by the quality engine described above. Trajectories that fail those
+checks are emitted as `trajectory` with a reason and are not matched — which is
+the point, because a notification that fires on every reflection off a curtain
+is one people turn off. The minimum score is a second filter for rooms where
+even a clean crossing is not always worth a phone buzzing.
+
+---
+
 ## Development
 
 | Module | Responsibility |

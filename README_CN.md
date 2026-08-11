@@ -193,6 +193,34 @@ SQLite 会复用释放的页，但不会缩小文件，所以清理只能止住�
 
 ---
 
+## 蓝图
+
+仓库在 [`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion)
+提供两个自动化蓝图。在**设置 → 自动化与场景 → 蓝图 → 导入蓝图**中按 URL 导入。
+
+### 灯随区域有人而亮
+
+[`zone_presence_light.yaml`](blueprints/automation/mmwave_fusion/zone_presence_light.yaml)
+
+区域有人时开灯，区域空了之后关灯。
+
+这不是把官方的移动感应蓝图换个传感器。PIR 只能报告**移动**，所以每个移动灯光
+自动化都需要一个超时，而每个超时都是妥协：太短则有人看书时灯灭，太长则人走后
+还亮十分钟。融合区域报告的是**存在**，因此没有需要猜的东西。宽限期的作用是扛过
+偶尔丢的一帧，而不是估计一个人能坐多久不动——需要超过一分钟，说明是在绕开一个
+标定问题而不是解决它。
+
+### 有效穿越时通知
+
+[`traverse_notification.yaml`](blueprints/automation/mmwave_fusion/traverse_notification.yaml)
+
+在 `traverse` 事件上触发：一条完整且观测充分的穿越路径，由上文的质量引擎判定。
+未通过检查的轨迹会以 `trajectory` 事件发出并附带原因，**不会**匹配本蓝图——这
+正是关键，因为一个被窗帘反射就响的通知，最终会被人关掉。最低分数是在此之上的
+第二层过滤，适用于那些"即使是干净的穿越也未必值得手机响一下"的房间。
+
+---
+
 ## 开发
 
 | 模块 | 职责 |

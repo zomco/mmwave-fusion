@@ -1,0 +1,103 @@
+blueprint:
+  name: MMWave Fusion — notify on a scored crossing
+  description: >-
+    Send a notification when someone walks a complete, well-observed path
+    through a zone.
+
+
+    **This is not a presence notification.** The integration scores every
+    trajectory it finishes and only calls the good ones `traverse`: long enough,
+    far enough, observed by enough radars, without a gap where the target was
+    lost. A trajectory that fails those checks is emitted as `trajectory` with
+    the reason attached and is *not* matched here. That is the whole point — a
+    notification that fires on every twitch is one people turn off, and mmWave
+    reflections off a fan or a curtain produce plenty of twitches.
+
+
+    The minimum score below is a second filter on top of that, for rooms where
+    even a clean crossing is not always worth a phone buzzing.
+
+
+    Requires the MMWave Fusion integration. If a camera is configured for the
+    zone, the recorded clip is attached when it is ready — but the notification
+    is sent either way rather than waiting, because a late notification about
+    someone walking through the hall is not worth much.
+  domain: automation
+  source_url: https://github.com/zomco/mmwave-fusion/blob/main/blueprints/automation/mmwave_fusion/traverse_notification.yaml
+  input:
+    fusion_id:
+      name: Fusion system
+      description: The `fusion_id` of the system to watch, as configured in the card.
+      default: home
+      selector:
+        text:
+    zone_id:
+      name: Zone
+      description: >-
+        The zone's id, not its display name. Leave empty to notify on a
+        crossing of any zone in the system.
+      default: ""
+      selector:
+        text:
+    min_score:
+      name: Minimum quality score
+      description: >-
+        0–100. The integration already withheld anything it judged unusable;
+        this only raises the bar further.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          mode: slider
+    notify_service:
+      name: Notify service
+      description: The notify service to call, without the `notify.` prefix.
+      default: persistent_notification
+      selector:
+        text:
+    title:
+      name: Title
+      default: Someone crossed the room
+      selector:
+        text:
+
+mode: queued
+max: 10
+
+variables:
+  wanted_zone: !input zone_id
+  wanted_score: !input min_score
+  # Needed as a variable, not just as an input: the service name is built by a
+  # template, and a template only sees variables. Without this it renders as a
+  # bare `notify.` and the automation fails at the point of notifying — which
+  # is the one moment nobody is watching the log.
+  notify_service: !input notify_service
+
+trigger:
+  - platform: event
+    event_type: mmwave_fusion_event
+    event_data:
+      event_type: traverse
+      fusion_id: !input fusion_id
+
+condition:
+  # Both filters live here rather than in event_data because event_data matches
+  # on equality only: an empty zone means "any zone", and the score is a
+  # threshold, neither of which equality can express.
+  - condition: template
+    value_template: >-
+      {{ wanted_zone | length == 0 or trigger.event.data.zone_id == wanted_zone }}
+  - condition: template
+    value_template: >-
+      {{ (trigger.event.data.quality_score | int(0)) >= (wanted_score | int(0)) }}
+
+action:
+  - service: "notify.{{ notify_service }}"
+    data:
+      title: !input title
+      message: >-
+        {{ trigger.event.data.zone_id }} ·
+        score {{ trigger.event.data.quality_score | int(0) }}/100 ·
+        {{ trigger.event.data.timestamp | timestamp_custom('%H:%M:%S') }}
