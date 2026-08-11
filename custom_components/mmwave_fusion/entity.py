@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
@@ -85,10 +86,33 @@ class FusionEntity(Entity):
 
     @callback
     def _handle_system_removed(self, fusion_id: str) -> None:
+        """Take this entity out when its fusion system is deleted.
+
+        Marking it unavailable and stopping there left registry litter that
+        nothing could clear: the system is gone from storage, so the entity
+        could never become available again, and it sat in the entity list
+        greyed out forever. Deleting a system from the card is an explicit
+        instruction, not a temporary outage.
+
+        Removed through the registry rather than by async_remove alone, because
+        async_remove drops the state but leaves the registry entry behind — and
+        a leftover entry comes back as a restored, permanently unavailable
+        entity on the next restart, which is the thing being fixed.
+
+        Recreating a system with the same id gives its entities the same unique
+        ids and therefore the same entity ids, so an automation that referenced
+        them survives a delete-and-recreate.
+        """
+
         if fusion_id != self._fusion_id:
             return
         self._removed = True
-        self.async_write_ha_state()
+        registry = er.async_get(self.hass)
+        if registry.async_get(self.entity_id) is not None:
+            registry.async_remove(self.entity_id)
+        else:
+            # Not registered — nothing to clean up, so just drop the state.
+            self.hass.async_create_task(self.async_remove(force_remove=True))
 
     # ── Helpers shared by the concrete entities ─────────────────────────────
 
