@@ -9,5 +9,19 @@
     "abort": {
       "already_configured": "MMWave 融合已配置。"
     }
+  },
+  "issues": {
+    "radar_unavailable": {
+      "title": "雷达 {radar_id} 没有上报数据",
+      "description": "融合系统 `{fusion_id}` 读取雷达 `{radar_id}` 的实体当前不可用，该雷达没有任何贡献：它的目标不会出现在融合视图中，仅由它覆盖的区域会一直显示为空。\n\n常见原因：设备掉线、断电，或 ESPHome API 不可达。请先在 Home Assistant 中查看该设备页面，再检查供电与接线。\n\n雷达恢复上报后此提示会自动消失。"
+    },
+    "radar_stale": {
+      "title": "雷达 {radar_id} 停止发送数据帧",
+      "description": "融合系统 `{fusion_id}` 中的雷达 `{radar_id}` 仍然在线，但其目标帧已超过配置的超时时间没有更新。也就是说设备本身可达，而它后面的雷达模块不再出数据。\n\n这通常指向串口而非网络：接插件松动、UART 引脚虚焊，或雷达模块死机。重启 ESP 不会给雷达模块断电，因此通常需要整体断电重上。\n\n数据帧恢复后此提示会自动消失。"
+    },
+    "radar_calibration": {
+      "title": "雷达 {radar_id} 可能标定有误",
+      "description": "在至少 100 次观测中，雷达 `{radar_id}` 上报的目标只有不到五分之一落在融合系统 `{fusion_id}` 配置的房间范围内。\n\n这种情况说明雷达能看到人，但坐标变换把人放到了房间之外——通常是安装位置偏移填错，或偏航角差了 90 度或 180 度。请在 mmWave 卡片的校准页重新标定。\n\n目标重新落回房间内后此提示会自动消失。"
+    }
   }
 }

@@ -31,6 +31,7 @@ from .const import (
     DEFAULT_RATE_HZ,
     DEFAULT_TRACK_TTL_S,
     EVENT_TYPE,
+    ISSUE_CHECK_INTERVAL_S,
     MODEL_COORDINATE_SCALE,
     PRUNE_INTERVAL_S,
     SIGNAL_SYSTEM_ADDED,
@@ -51,6 +52,7 @@ from .fusion import (
 )
 from .profiles import normalize_calibration_profile
 from .quality import TrajectoryQualityEngine
+from .repairs import RadarIssueReporter
 from .storage import TrajectoryStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -280,6 +282,12 @@ class FusionSystem:
             min_confirm_sources=int(settings["min_confirm_sources"]),
         )
         self.events = ZoneEventEngine(self.fusion_id, config["zones"])
+        self.issues = RadarIssueReporter(hass, self.fusion_id)
+        # Repairs are checked on a slow beat of their own. The health
+        # snapshot is rebuilt every tick, but creating and deleting issues
+        # ten times a second would be absurd, and the conditions being
+        # watched all take minutes to matter.
+        self._issue_check_at = 0.0
         self.quality = TrajectoryQualityEngine(
             self.fusion_id,
             float(config["room_w"]),
@@ -328,6 +336,9 @@ class FusionSystem:
             self._schedule_radar_flush(radar_id)
 
     async def async_stop(self) -> None:
+        # A system being reconfigured or removed should not leave its radar
+        # warnings sitting on the Repairs page with nothing left to fix them.
+        self.issues.clear_all()
         if self._remove_listener is not None:
             self._remove_listener()
             self._remove_listener = None
@@ -642,6 +653,11 @@ class FusionSystem:
             await self.hass.async_add_executor_job(self.storage.insert_event, fusion_event)
             self.hass.bus.async_fire(EVENT_TYPE, fusion_event)
 
+        radar_health = self.radar_health()
+        if now - self._issue_check_at >= ISSUE_CHECK_INTERVAL_S:
+            self._issue_check_at = now
+            self.issues.sync(radar_health, now)
+
         payload = {
             # Rides on every push so any card, including a non-admin viewer
             # that never calls configure, can check it.
@@ -650,7 +666,7 @@ class FusionSystem:
             "timestamp": now,
             "tracks": [track.as_dict() for track in result.tracks],
             "events": emitted_events,
-            "radars": self._radar_health(),
+            "radars": radar_health,
             # Per-zone occupancy rides along on every push so the zone entities
             # can be plain consumers of it, rather than each recomputing
             # point-in-polygon and being free to disagree with the enter/exit
@@ -820,7 +836,7 @@ class FusionSystem:
                 clip["error"],
             )
 
-    def _radar_health(self) -> list[dict[str, object]]:
+    def radar_health(self) -> list[dict[str, object]]:
         health: list[dict[str, object]] = []
         now = time.time()
         for radar_id, radar in self._radars.items():
@@ -873,7 +889,7 @@ class FusionSystem:
                 len(track.sources) >= 2 for track in self._latest_tracks
             ),
             "calibration_warnings": [
-                radar["id"] for radar in self._radar_health() if radar.get("calibration_warning")
+                radar["id"] for radar in self.radar_health() if radar.get("calibration_warning")
             ],
         }
 

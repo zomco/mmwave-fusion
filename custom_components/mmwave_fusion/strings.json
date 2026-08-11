@@ -9,5 +9,19 @@
     "abort": {
       "already_configured": "MMWave Fusion is already set up."
     }
+  },
+  "issues": {
+    "radar_unavailable": {
+      "title": "Radar {radar_id} is not reporting",
+      "description": "The entity fusion system `{fusion_id}` reads radar `{radar_id}` from is unavailable, so that radar is contributing nothing. Its targets are missing from the fused view and any zone it covers alone reads empty.\n\nUsual causes: the device is off the network, powered down, or its ESPHome API is unreachable. Check the device's own page in Home Assistant, then its power and wiring.\n\nThis clears itself once the radar reports again."
+    },
+    "radar_stale": {
+      "title": "Radar {radar_id} has stopped sending frames",
+      "description": "Radar `{radar_id}` in fusion system `{fusion_id}` is still online, but its target frames have not updated within the configured staleness window. The device is reachable and the radar module behind it is not talking.\n\nThat usually means the radar's serial link rather than the network: a loose connector, a cold solder joint on the UART pins, or a radar module that has crashed. Restarting the ESP does not power-cycle the radar module, so a full power cycle is the usual fix.\n\nThis clears itself once frames resume."
+    },
+    "radar_calibration": {
+      "title": "Radar {radar_id} may be miscalibrated",
+      "description": "Fewer than one in five targets radar `{radar_id}` reports land inside the room configured for fusion system `{fusion_id}`, measured over at least 100 observations.\n\nThat pattern means the radar sees people but the transform puts them somewhere the room is not — usually a wrong position offset, or a yaw that is off by 90 or 180 degrees. Recalibrate it from the mmWave card's calibration tabs.\n\nThis clears itself once its targets start landing in the room."
+    }
   }
 }
