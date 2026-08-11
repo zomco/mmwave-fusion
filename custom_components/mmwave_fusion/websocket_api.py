@@ -10,7 +10,13 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import API_VERSION, DEFAULT_FUSION_ID, DOMAIN, SIGNAL_UPDATE
+from .const import (
+    API_VERSION,
+    DEFAULT_FUSION_ID,
+    DOMAIN,
+    MAX_REPLAY_WINDOW_S,
+    SIGNAL_UPDATE,
+)
 from .coordinator import FusionCoordinator
 
 
@@ -23,6 +29,7 @@ def async_register_websocket_api(hass: HomeAssistant, coordinator: FusionCoordin
     websocket_api.async_register_command(hass, ws_query_events)
     websocket_api.async_register_command(hass, ws_query_track)
     websocket_api.async_register_command(hass, ws_query_heatmap)
+    websocket_api.async_register_command(hass, ws_query_replay)
     websocket_api.async_register_command(hass, ws_list_calibration_profiles)
     websocket_api.async_register_command(hass, ws_upsert_calibration_profile)
     websocket_api.async_register_command(hass, ws_remove_calibration_profile)
@@ -202,6 +209,63 @@ async def ws_query_heatmap(
         until - msg["hours"] * 3600.0,
         until,
         msg["bin_cm"],
+    )
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "mmwave_fusion/query_replay",
+        vol.Required("fusion_id"): str,
+        # Absolute rather than "hours ago", because a replay is scrubbed: the
+        # window has to stay put while the viewer moves through it, and a
+        # relative one would slide under the playhead on every refetch.
+        vol.Required("since"): vol.Coerce(float),
+        vol.Required("until"): vol.Coerce(float),
+        # Six hours of positions is already a large answer even thinned, and
+        # nobody scrubs through a week. The heatmap is the tool for that.
+        vol.Optional("max_points", default=20000): vol.All(
+            vol.Coerce(int), vol.Range(min=100, max=60000)
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_query_replay(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Every track in a window, thinned to a budget, for scrubbing through.
+
+    The heatmap answers where people go; this answers what happened at a
+    particular time. That needs the positions themselves, so unlike the heatmap
+    the payload does not collapse — the thinning is what keeps it bounded, and
+    the sample rate actually used comes back with the data so a viewer can say
+    how coarse the answer is.
+    """
+
+    since = msg["since"]
+    until = msg["until"]
+    if until <= since:
+        connection.send_error(
+            msg["id"], websocket_api.const.ERR_INVALID_FORMAT, "until must be after since"
+        )
+        return
+    if until - since > MAX_REPLAY_WINDOW_S:
+        connection.send_error(
+            msg["id"],
+            websocket_api.const.ERR_INVALID_FORMAT,
+            f"replay windows are limited to {MAX_REPLAY_WINDOW_S / 3600:.0f} hours",
+        )
+        return
+
+    coordinator: FusionCoordinator = hass.data[DOMAIN]
+    result = await hass.async_add_executor_job(
+        coordinator.trajectory_store.replay_window,
+        msg["fusion_id"],
+        since,
+        until,
+        msg["max_points"],
     )
     connection.send_result(msg["id"], result)
 

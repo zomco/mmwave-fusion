@@ -11,9 +11,10 @@ DOMAIN = "mmwave_fusion"
 # when a request or reply field changes meaning; the card compares it against
 # the minimum it needs and says so plainly rather than half-working.
 # 2 adds mmwave_fusion/query_heatmap, and the zone_occupancy field on the
-# update push that the per-zone entities read. Both are additions, so an
-# older card still works — it simply does not ask for them.
-API_VERSION = 2
+# update push that the per-zone entities read. 3 adds
+# mmwave_fusion/query_replay. All are additions, so an older card still works —
+# it simply does not ask for them.
+API_VERSION = 3
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
 
@@ -25,16 +26,18 @@ DEFAULT_TRACK_TTL_S = 1.2
 DEFAULT_FRAME_DEBOUNCE_S = 0.05
 DEFAULT_POINT_FLUSH_S = 1.0
 
-# History retention. track_points is written at the fusion rate and dominates
-# the database; tracks and events are metadata and are what the event list
+# History retention. track_points dominates the database: one row per track
+# per quality.persist_interval_s, which is twice a second by default and is
+# *not* the fusion rate — raising rate_hz makes tracking smoother without
+# storing more. tracks and events are metadata and are what the event list
 # reads, so they are kept far longer.
 DEFAULT_POINT_RETENTION_DAYS = 7
 DEFAULT_EVENT_RETENTION_DAYS = 90
 PRUNE_INTERVAL_S = 6 * 3600
 
 # Both windows are settable from the config entry's options. The defaults suit
-# a house; the cost is roughly 50 MB per day of points on a two-radar system at
-# 10 Hz, which is the number worth knowing before raising the first one.
+# a house; the cost measured on the development bench was roughly 50 MB per day
+# of points, which is the number worth knowing before raising the first one.
 OPTION_POINT_RETENTION_DAYS = "point_retention_days"
 OPTION_EVENT_RETENTION_DAYS = "event_retention_days"
 
@@ -50,6 +53,11 @@ MAX_EVENT_RETENTION_DAYS = 3650
 # itself is rebuilt every tick; this only governs how often issues are
 # raised or cleared, and none of the conditions matter on a shorter scale.
 ISSUE_CHECK_INTERVAL_S = 30.0
+
+# The widest replay a viewer may ask for. Six hours of positions is already a
+# large answer even after thinning, and nobody scrubs through a week — the
+# heatmap is the tool for that span.
+MAX_REPLAY_WINDOW_S = 6 * 3600
 
 EVENT_TYPE = "mmwave_fusion_event"
 SIGNAL_UPDATE = "mmwave_fusion_update"

@@ -73,10 +73,11 @@ class MMWaveFusionOptionsFlow(OptionsFlow):
     SQLite database they all share, so it lives with the entry that owns it.
 
     It is worth exposing because the cost is real and depends entirely on the
-    install: track_points is written at the fusion rate, which on a two-radar
-    system at 10 Hz is roughly 50 MB per day. A week suits a house. A week of a
-    warehouse is a different number, and so is a week of a holiday cottage that
-    nobody walks through.
+    install: a position is stored per track every quality.persist_interval_s —
+    twice a second by default, whatever the fusion rate — which on the
+    development bench came to roughly 50 MB a day. A week suits a house. A week
+    of a warehouse is a different number, and so is a week of a holiday cottage
+    that nobody walks through.
     """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

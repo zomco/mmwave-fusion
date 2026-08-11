@@ -133,7 +133,7 @@ class FusionDatabaseSizeSensor(FusionEntity, SensorEntity):
     """How much disk the trajectory store is using.
 
     Worth an entity because the number gets away from you quietly: track_points
-    is written at the fusion rate, and the development instance reached 328 MB
+    grows by one row per track twice a second, and the development instance reached 328 MB
     before anyone looked. Retention stops the growth, but SQLite only reuses
     freed pages — the file itself shrinks when the vacuum_database action runs,
     and this is how you see whether that was worth doing.

@@ -28,7 +28,7 @@
     "step": {
       "init": {
         "title": "History retention",
-        "description": "How long the fusion database keeps what it records. Positions are written at the fusion rate and dominate the file — roughly 50 MB per day on a two-radar system at 10 Hz. Events and tracks are metadata and cost almost nothing, so they are normally kept far longer.\n\nShortening a window deletes the excess on the next sweep. SQLite reuses the freed pages but does not shrink the file on its own; call the `mmwave_fusion.vacuum_database` service to give the space back to the disk.",
+        "description": "How long the fusion database keeps what it records. Positions dominate the file — one per track every half second by default, which came to roughly 50 MB a day on the development bench. This is set by the trajectory quality option `persist_interval_s`, not by the fusion rate: raising the fusion rate makes tracking smoother without storing more. Events and tracks are metadata and cost almost nothing, so they are normally kept far longer.\n\nShortening a window deletes the excess on the next sweep. SQLite reuses the freed pages but does not shrink the file on its own; call the `mmwave_fusion.vacuum_database` service to give the space back to the disk.",
         "data": {
           "point_retention_days": "Keep positions for (days)",
           "event_retention_days": "Keep events and tracks for (days)"
