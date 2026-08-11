@@ -68,5 +68,9 @@ async def async_get_config_entry_diagnostics(
             "size_bytes": await hass.async_add_executor_job(
                 coordinator.trajectory_store.size_bytes
             ),
+            # "The database is enormous" is answered by these two numbers plus
+            # the radar count, and by nothing else in this file.
+            "point_retention_days": coordinator.point_retention_days,
+            "event_retention_days": coordinator.event_retention_days,
         },
     }

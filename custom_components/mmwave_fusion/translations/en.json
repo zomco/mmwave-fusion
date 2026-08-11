@@ -23,5 +23,24 @@
       "title": "Radar {radar_id} may be miscalibrated",
       "description": "Fewer than one in five targets radar `{radar_id}` reports land inside the room configured for fusion system `{fusion_id}`, measured over at least 100 observations.\n\nThat pattern means the radar sees people but the transform puts them somewhere the room is not — usually a wrong position offset, or a yaw that is off by 90 or 180 degrees. Recalibrate it from the mmWave card's calibration tabs.\n\nThis clears itself once its targets start landing in the room."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "History retention",
+        "description": "How long the fusion database keeps what it records. Positions are written at the fusion rate and dominate the file — roughly 50 MB per day on a two-radar system at 10 Hz. Events and tracks are metadata and cost almost nothing, so they are normally kept far longer.\n\nShortening a window deletes the excess on the next sweep. SQLite reuses the freed pages but does not shrink the file on its own; call the `mmwave_fusion.vacuum_database` service to give the space back to the disk.",
+        "data": {
+          "point_retention_days": "Keep positions for (days)",
+          "event_retention_days": "Keep events and tracks for (days)"
+        },
+        "data_description": {
+          "point_retention_days": "The occupancy heatmap can only look back this far. Its widest view is 7 days.",
+          "event_retention_days": "Must be at least as long as the position window, or positions outlive the tracks they belong to. Events with a saved recording are never deleted."
+        }
+      }
+    },
+    "error": {
+      "events_shorter_than_points": "Events must be kept at least as long as positions. A shorter window would delete the tracks that positions belong to while the positions themselves remain — they would still take up space but no longer appear anywhere."
+    }
   }
 }
