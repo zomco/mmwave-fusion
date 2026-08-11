@@ -8,7 +8,13 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
+from .const import (
+    DEFAULT_EVENT_RETENTION_DAYS,
+    DEFAULT_POINT_RETENTION_DAYS,
+    DOMAIN,
+    OPTION_EVENT_RETENTION_DAYS,
+    OPTION_POINT_RETENTION_DAYS,
+)
 from .coordinator import FusionCoordinator
 from .services import async_register_services, async_unregister_services
 from .websocket_api import async_register_websocket_api
@@ -37,8 +43,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+def _apply_options(coordinator: FusionCoordinator, entry: ConfigEntry) -> None:
+    coordinator.set_retention(
+        float(entry.options.get(OPTION_POINT_RETENTION_DAYS, DEFAULT_POINT_RETENTION_DAYS)),
+        float(entry.options.get(OPTION_EVENT_RETENTION_DAYS, DEFAULT_EVENT_RETENTION_DAYS)),
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = FusionCoordinator(hass)
+    # Before initialize, so the first sweep already uses the configured windows
+    # rather than pruning to the defaults once and correcting itself later.
+    _apply_options(coordinator, entry)
     await coordinator.async_initialize()
     hass.data.setdefault(DOMAIN, coordinator)
     async_register_websocket_api(hass, coordinator)
@@ -56,6 +72,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_shutdown()
 
     entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop))
+
+    # Applied in place rather than by reloading the entry: a reload would tear
+    # down every fusion system and restart the tracking loops, dropping tracks
+    # in flight, to change a number the prune loop reads on its next pass.
+    async def _async_options_updated(_: HomeAssistant, updated: ConfigEntry) -> None:
+        _apply_options(coordinator, updated)
+
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
 

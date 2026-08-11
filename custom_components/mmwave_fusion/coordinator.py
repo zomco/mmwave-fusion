@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -71,6 +72,11 @@ class FusionCoordinator:
         self.configs: dict[str, dict[str, Any]] = {}
         self.calibration_profiles: dict[str, dict[str, Any]] = {}
         self._prune_task: asyncio.Task[None] | None = None
+        self.point_retention_days: float = DEFAULT_POINT_RETENTION_DAYS
+        self.event_retention_days: float = DEFAULT_EVENT_RETENTION_DAYS
+        # Set when the options change so the sleeping prune loop wakes instead
+        # of sitting out the rest of its six hours.
+        self._prune_now = asyncio.Event()
 
     async def async_initialize(self) -> None:
         await self.hass.async_add_executor_job(self.trajectory_store.initialize)
@@ -136,6 +142,26 @@ class FusionCoordinator:
             await system.async_stop()
         await self.hass.async_add_executor_job(self.trajectory_store.close)
 
+    def set_retention(self, point_days: float, event_days: float) -> None:
+        """Apply new retention windows and sweep on the next tick.
+
+        Shortening a window is a request to delete something, and waiting up to
+        six hours for the periodic sweep to notice makes it look ignored. The
+        loop is woken rather than pruned inline so there is still only ever one
+        sweep in flight.
+        """
+
+        if (point_days, event_days) == (self.point_retention_days, self.event_retention_days):
+            return
+        self.point_retention_days = point_days
+        self.event_retention_days = event_days
+        _LOGGER.info(
+            "History retention set to %s day(s) of points and %s day(s) of events",
+            point_days,
+            event_days,
+        )
+        self._prune_now.set()
+
     async def _async_prune_loop(self) -> None:
         """Trim history periodically so the database stops growing forever."""
 
@@ -144,8 +170,8 @@ class FusionCoordinator:
                 removed = await self.hass.async_add_executor_job(
                     self.trajectory_store.prune,
                     time.time(),
-                    DEFAULT_POINT_RETENTION_DAYS * 86400.0,
-                    DEFAULT_EVENT_RETENTION_DAYS * 86400.0,
+                    self.point_retention_days * 86400.0,
+                    self.event_retention_days * 86400.0,
                 )
                 if any(removed.values()):
                     _LOGGER.info(
@@ -158,7 +184,10 @@ class FusionCoordinator:
                 raise
             except Exception:
                 _LOGGER.exception("Trajectory history prune failed")
-            await asyncio.sleep(PRUNE_INTERVAL_S)
+            self._prune_now.clear()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(PRUNE_INTERVAL_S):
+                    await self._prune_now.wait()
 
     async def async_vacuum(self) -> dict[str, int]:
         """Reclaim the disk space pruning freed. Blocking, so off the loop."""
@@ -178,8 +207,8 @@ class FusionCoordinator:
         removed = await self.hass.async_add_executor_job(
             self.trajectory_store.prune,
             time.time(),
-            DEFAULT_POINT_RETENTION_DAYS * 86400.0,
-            DEFAULT_EVENT_RETENTION_DAYS * 86400.0,
+            self.point_retention_days * 86400.0,
+            self.event_retention_days * 86400.0,
         )
         _LOGGER.info(
             "Pruned history on request: %s track points, %s tracks, %s events",

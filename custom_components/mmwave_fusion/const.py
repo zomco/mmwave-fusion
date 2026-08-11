@@ -32,6 +32,20 @@ DEFAULT_POINT_RETENTION_DAYS = 7
 DEFAULT_EVENT_RETENTION_DAYS = 90
 PRUNE_INTERVAL_S = 6 * 3600
 
+# Both windows are settable from the config entry's options. The defaults suit
+# a house; the cost is roughly 50 MB per day of points on a two-radar system at
+# 10 Hz, which is the number worth knowing before raising the first one.
+OPTION_POINT_RETENTION_DAYS = "point_retention_days"
+OPTION_EVENT_RETENTION_DAYS = "event_retention_days"
+
+# A day is the shortest useful window — the heatmap's default view is a day,
+# and anything less would leave it empty. The upper bounds are there to stop a
+# typo turning into a database nobody can vacuum.
+MIN_POINT_RETENTION_DAYS = 1
+MAX_POINT_RETENTION_DAYS = 90
+MIN_EVENT_RETENTION_DAYS = 1
+MAX_EVENT_RETENTION_DAYS = 3650
+
 # How often radar health is checked against the Repairs page. The snapshot
 # itself is rebuilt every tick; this only governs how often issues are
 # raised or cleared, and none of the conditions matter on a shorter scale.
