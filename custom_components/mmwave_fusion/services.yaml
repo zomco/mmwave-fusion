@@ -1,0 +1,34 @@
+vacuum_database:
+  name: Vacuum database
+  description: >-
+    Rebuild the trajectory database to reclaim disk space that pruning freed.
+    SQLite reuses deleted pages but never shrinks the file on its own, so a
+    store that grew large before retention was in place stays large until this
+    runs. Needs briefly as much free disk as the database itself, and blocks
+    while it copies. Returns the size before and after, and the bytes reclaimed.
+
+prune_history:
+  name: Prune history
+  description: >-
+    Apply the retention windows now instead of waiting for the six-hourly
+    sweep. Deletes track points older than 7 days and tracks and events older
+    than 90 days; recordings are never touched. Returns how many rows went.
+    Frees pages for reuse rather than shrinking the file — follow with Vacuum
+    database for that.
+
+reset_tracks:
+  name: Reset tracks
+  description: >-
+    Discard every track being followed right now and start again from what the
+    radars currently see. Useful after recalibrating or moving furniture, when
+    the tracker is coasting on positions that no longer mean anything. Only
+    live state is affected; recorded history is untouched.
+  fields:
+    fusion_id:
+      name: Fusion system
+      description: >-
+        Which system to reset. Leave empty to reset every configured system.
+      required: false
+      example: home
+      selector:
+        text:

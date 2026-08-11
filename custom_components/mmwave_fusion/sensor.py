@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory, UnitOfInformation
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_SYSTEM_ADDED
 from .entity import FusionEntity
+
+# Only the database-size sensor polls; everything else is pushed. Five
+# minutes is far more often than a file that moves at a few MB a day needs.
+SCAN_INTERVAL = timedelta(minutes=5)
 
 
 async def async_setup_entry(
@@ -27,12 +37,18 @@ async def async_setup_entry(
         if fusion_id in known:
             return
         known.add(fusion_id)
-        entities: list[SensorEntity] = [FusionTargetCountSensor(fusion_id)]
+        entities: list[SensorEntity] = [
+            FusionTargetCountSensor(fusion_id),
+            FusionDatabaseSizeSensor(fusion_id, coordinator),
+        ]
         entities += [
             FusionZoneCountSensor(fusion_id, str(zone["id"]), str(zone.get("name") or zone["id"]))
             for zone in coordinator.configs.get(fusion_id, {}).get("zones", [])
         ]
-        async_add_entities(entities)
+        # update_before_add so the polled database-size sensor has a value
+        # immediately; without it the entity reads unknown for a full scan
+        # interval after every restart. The pushed entities ignore it.
+        async_add_entities(entities, update_before_add=True)
 
     for fusion_id in coordinator.systems:
         _add(fusion_id)
@@ -111,3 +127,60 @@ class FusionZoneCountSensor(FusionEntity, SensorEntity):
             "zone_id": self._zone_id,
             "zone_name": self._zone_name,
         }
+
+
+class FusionDatabaseSizeSensor(FusionEntity, SensorEntity):
+    """How much disk the trajectory store is using.
+
+    Worth an entity because the number gets away from you quietly: track_points
+    is written at the fusion rate, and the development instance reached 328 MB
+    before anyone looked. Retention stops the growth, but SQLite only reuses
+    freed pages — the file itself shrinks when the vacuum_database action runs,
+    and this is how you see whether that was worth doing.
+
+    Reported per fusion system for placement on that system's device, though the
+    store is shared, so every one of them reads the same number.
+    """
+
+    _attr_device_class = SensorDeviceClass.DATA_SIZE
+    _attr_native_unit_of_measurement = UnitOfInformation.MEBIBYTES
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:database"
+
+    def __init__(self, fusion_id: str, coordinator: Any) -> None:
+        super().__init__(
+            fusion_id,
+            "database_size",
+            f"MMWave Fusion {fusion_id} database size",
+        )
+        self._coordinator = coordinator
+        self._size_mib: float | None = None
+
+    # Polled, not pushed, and that is deliberate: reading the size means
+    # stat()ing the file, which is I/O and must not happen on the event loop.
+    # Doing it in native_value earned a "took 0.414 seconds" warning from Home
+    # Assistant the first time this ran.
+    _attr_should_poll = True
+
+    @property
+    def available(self) -> bool:
+        # Unlike the others this does not need a frame to have arrived — the
+        # file has a size from the moment the store is initialised, and its
+        # size is most interesting precisely when nothing is being tracked.
+        return not self._removed
+
+    @property
+    def native_value(self) -> float | None:
+        return self._size_mib
+
+    async def async_update(self) -> None:
+        def _size() -> float | None:
+            try:
+                return self._coordinator.trajectory_store.size_bytes() / 1048576
+            except OSError:
+                # The store can be mid-vacuum, which briefly replaces the file.
+                return None
+
+        self._size_mib = await self.hass.async_add_executor_job(_size)
