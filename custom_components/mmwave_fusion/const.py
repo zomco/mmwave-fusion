@@ -10,7 +10,10 @@ DOMAIN = "mmwave_fusion"
 # user can end up with any combination. Bump this when a command is added, or
 # when a request or reply field changes meaning; the card compares it against
 # the minimum it needs and says so plainly rather than half-working.
-API_VERSION = 1
+# 2 adds mmwave_fusion/query_heatmap, and the zone_occupancy field on the
+# update push that the per-zone entities read. Both are additions, so an
+# older card still works — it simply does not ask for them.
+API_VERSION = 2
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
 

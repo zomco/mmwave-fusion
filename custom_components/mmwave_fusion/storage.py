@@ -19,6 +19,12 @@ class TrajectoryStore:
         self.path = Path(path)
         self._connection: sqlite3.Connection | None = None
         self._lock = Lock()
+        # A second, read-only connection for the analytics queries, with a lock
+        # of its own. Kept open rather than made per call: SQLite's page cache
+        # is per-connection, and reopening threw it away every time — the
+        # heatmap took twenty seconds through Home Assistant against two locally.
+        self._read_connection: sqlite3.Connection | None = None
+        self._read_lock = Lock()
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +105,20 @@ class TrajectoryStore:
             if self._connection is not None:
                 self._connection.close()
                 self._connection = None
+        with self._read_lock:
+            if self._read_connection is not None:
+                self._read_connection.close()
+                self._read_connection = None
+
+    def _reader(self) -> sqlite3.Connection:
+        """Read-only connection for queries too slow to hold the write lock."""
+
+        if self._read_connection is None:
+            self._read_connection = sqlite3.connect(
+                f"file:{self.path}?mode=ro", uri=True, check_same_thread=False
+            )
+            self._read_connection.row_factory = sqlite3.Row
+        return self._read_connection
 
     def size_bytes(self) -> int:
         """Bytes the store occupies on disk, write-ahead log included.
@@ -342,6 +362,87 @@ class TrajectoryStore:
                 item["recording_decisions"] = metadata.get("recording_decisions")
             result.append(item)
         return result
+
+    def occupancy_grid(
+        self,
+        fusion_id: str,
+        since: float,
+        until: float,
+        bin_cm: float,
+        max_cells: int = 20000,
+    ) -> dict[str, object]:
+        """Bin recorded positions into a grid of visit counts.
+
+        The binning happens in SQL, and that is the whole point. track_points is
+        written at the fusion rate — roughly 310k rows a day on the development
+        instance — so a week is a couple of million rows. Sending those to a
+        browser to be counted there would be absurd; a 20 cm grid over a 4 m
+        room is 500 cells whatever the window.
+
+        Cells are keyed by their lower-left corner in centimetres, so the caller
+        does not have to know how the binning was done to place them.
+
+        max_cells is a guard against a caller asking for a 1 cm grid over a
+        warehouse. It truncates the busiest cells rather than failing, because a
+        partial heatmap is still a heatmap.
+        """
+
+        bin_cm = max(float(bin_cm), 1.0)
+        # A separate read-only connection rather than the shared one, and no
+        # lock. This query takes seconds over a week of history, and the shared
+        # lock is held by append_points at the fusion rate — holding it here
+        # would stall the tracking loop for as long as the scan runs, to draw a
+        # picture. WAL mode is already on, which is exactly the mode that lets a
+        # reader work while the writer keeps going.
+        with self._read_lock:
+            rows = (
+                self._reader()
+                .execute(
+                    """
+                SELECT
+                    CAST(FLOOR(p.x / :bin) AS INTEGER) AS gx,
+                    CAST(FLOOR(p.y / :bin) AS INTEGER) AS gy,
+                    COUNT(*) AS visits
+                FROM track_points AS p
+                JOIN tracks AS t ON t.track_id = p.track_id
+                WHERE t.fusion_id = :fusion_id
+                  AND p.ts >= :since
+                  AND p.ts < :until
+                GROUP BY gx, gy
+                ORDER BY visits DESC
+                LIMIT :max_cells
+                """,
+                    {
+                        "bin": bin_cm,
+                        "fusion_id": fusion_id,
+                        "since": since,
+                        "until": until,
+                        "max_cells": max(int(max_cells), 1),
+                    },
+                )
+                .fetchall()
+            )
+
+        cells = [
+            {
+                "x": row["gx"] * bin_cm,
+                "y": row["gy"] * bin_cm,
+                "visits": int(row["visits"]),
+            }
+            for row in rows
+        ]
+        return {
+            "fusion_id": fusion_id,
+            "since": since,
+            "until": until,
+            "bin_cm": bin_cm,
+            # The busiest cell, so a renderer can scale its colour ramp without
+            # a second pass over the data.
+            "max_visits": max((cell["visits"] for cell in cells), default=0),
+            "total_points": sum(cell["visits"] for cell in cells),
+            "truncated": len(cells) >= max(int(max_cells), 1),
+            "cells": cells,
+        }
 
     def query_track(self, track_id: str, limit: int = 5000) -> list[dict[str, object]]:
         with self._lock:
