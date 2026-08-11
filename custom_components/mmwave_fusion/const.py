@@ -74,8 +74,17 @@ MODEL = "Multi-radar fusion"
 
 # Values exposed by the current mmwave-card model adapters. Models that only
 # provide a range are intentionally excluded from spatial fusion.
+# Fallback conversion to centimetres, per model, used *only* when a coordinate
+# entity carries no unit_of_measurement that entity_coordinate_scale can read.
+#
+# These describe what the ESPHome entity publishes, not what the radar protocol
+# carries on the wire. Every component in mmwave-component converts to
+# centimetres before publishing and declares `cm`, so every value here is 1.0.
+# ld2450 sat at 0.1 — the unit of its raw protocol frame — which was a ten-fold
+# error waiting for the first entity that did not declare a unit, and looked
+# authoritative enough that nobody would question it.
 MODEL_COORDINATE_SCALE: dict[str, float] = {
-    "ld2450": 0.1,
+    "ld2450": 1.0,
     "ld2451": 1.0,
     "ld2452": 1.0,
     "ld2453": 1.0,
