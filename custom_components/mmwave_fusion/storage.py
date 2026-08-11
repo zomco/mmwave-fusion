@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Iterable
+from itertools import pairwise
 from pathlib import Path
 from threading import Lock
 
@@ -286,9 +287,9 @@ class TrajectoryStore:
     def prune(self, now: float, point_max_age_s: float, event_max_age_s: float) -> dict[str, int]:
         """Delete history older than the retention windows.
 
-        Nothing pruned this store before, so it grew at the fusion rate for as
-        long as Home Assistant ran - on the development instance that was
-        ~310k track_points a day, about 51 MB.
+        Nothing pruned this store before, so it grew for as long as Home
+        Assistant ran - on the development instance that was ~310k track_points
+        a day, about 51 MB.
 
         track_points is the bulk and gets the short window. tracks and events
         are metadata, orders of magnitude smaller, and are what the event list
@@ -374,8 +375,8 @@ class TrajectoryStore:
         """Bin recorded positions into a grid of visit counts.
 
         The binning happens in SQL, and that is the whole point. track_points is
-        written at the fusion rate — roughly 310k rows a day on the development
-        instance — so a week is a couple of million rows. Sending those to a
+        written twice a second per track — roughly 310k rows a day on the
+        development instance — so a week is a couple of million rows. Sending those to a
         browser to be counted there would be absurd; a 20 cm grid over a 4 m
         room is 500 cells whatever the window.
 
@@ -390,7 +391,7 @@ class TrajectoryStore:
         bin_cm = max(float(bin_cm), 1.0)
         # A separate read-only connection rather than the shared one, and no
         # lock. This query takes seconds over a week of history, and the shared
-        # lock is held by append_points at the fusion rate — holding it here
+        # lock is held by append_points on every flush — holding it here
         # would stall the tracking loop for as long as the scan runs, to draw a
         # picture. WAL mode is already on, which is exactly the mode that lets a
         # reader work while the writer keeps going.
@@ -442,6 +443,136 @@ class TrajectoryStore:
             "total_points": sum(cell["visits"] for cell in cells),
             "truncated": len(cells) >= max(int(max_cells), 1),
             "cells": cells,
+        }
+
+    def replay_window(
+        self,
+        fusion_id: str,
+        since: float,
+        until: float,
+        max_points: int = 20000,
+    ) -> dict[str, object]:
+        """Every track in a window, thinned to a fixed budget of points.
+
+        The heatmap answers where people go. This answers what happened at three
+        in the morning, which needs the positions themselves and therefore has a
+        payload problem the heatmap does not. Positions are stored twice a
+        second per track by default, so ten minutes of three people is a few
+        thousand points and six hours of a busy room is tens of thousands — and
+        anyone who has lowered quality.persist_interval_s can have far more.
+
+        So the points are thinned here rather than sent and thrown away. The
+        thinning keeps every Nth stored position per track, which sounds cruder
+        than bucketing by time and is better in three ways. It cannot overshoot
+        the budget, because N is chosen from an exact count. It has no
+        floating-point edges — the first attempt bucketed on `(ts - since) /
+        step` and lost points whenever two landed either side of a jittery
+        boundary, so twenty positions came back as sixteen. And because
+        positions are written at a fixed rate, every Nth is evenly spaced in
+        time anyway, while a real gap in a track — a target that was lost — is
+        preserved rather than papered over by a bucket that borrows from the
+        next one.
+
+        The caller gives a window and a budget; N is chosen to fit rather than
+        asked for, because a caller cannot know how many people were in the
+        room. Two scans: one to count, one to fetch. The alternative — fetching
+        everything and cutting at a LIMIT — silently returns the first few
+        minutes of the window, which for a replay is worse than a coarser one
+        covering all of it.
+
+        `sample_hz` in the result is measured from what came back, not assumed,
+        so a viewer can say how coarse the answer is.
+        """
+
+        since = float(since)
+        until = float(until)
+        budget = max(int(max_points), 1)
+
+        selection = {
+            "fusion_id": fusion_id,
+            "since": since,
+            "until": until,
+        }
+        with self._read_lock:
+            reader = self._reader()
+            stored = reader.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM track_points AS p
+                JOIN tracks AS t ON t.track_id = p.track_id
+                WHERE t.fusion_id = :fusion_id
+                  AND p.ts >= :since
+                  AND p.ts < :until
+                """,
+                selection,
+            ).fetchone()["n"]
+
+            stride = max(1, -(-int(stored) // budget))
+            # stride 1 keeps everything, so this is one query shape for both
+            # the thinned and the whole case rather than two paths to test.
+            rows = reader.execute(
+                """
+                WITH numbered AS (
+                    SELECT p.track_id AS track_id, p.ts AS ts, p.x AS x, p.y AS y,
+                           p.confidence AS confidence,
+                           ROW_NUMBER() OVER (PARTITION BY p.track_id ORDER BY p.ts) - 1 AS rn
+                    FROM track_points AS p
+                    JOIN tracks AS t ON t.track_id = p.track_id
+                    WHERE t.fusion_id = :fusion_id
+                      AND p.ts >= :since
+                      AND p.ts < :until
+                )
+                SELECT track_id, ts, x, y, confidence
+                FROM numbered
+                WHERE rn % :stride = 0
+                ORDER BY track_id, ts
+                """,
+                {**selection, "stride": stride},
+            ).fetchall()
+
+        tracks: dict[str, list[dict[str, float]]] = {}
+        for row in rows:
+            tracks.setdefault(str(row["track_id"]), []).append(
+                {
+                    "ts": float(row["ts"]),
+                    "x": float(row["x"]),
+                    "y": float(row["y"]),
+                    "confidence": float(row["confidence"]),
+                }
+            )
+
+        # Measured rather than derived from the stride: the stride is in stored
+        # positions and the rate they were stored at is a setting this layer
+        # does not see, so the only honest rate is the one they actually have.
+        # Median, because a track that was lost and reacquired contributes one
+        # enormous gap that a mean would spread over everything.
+        gaps = sorted(
+            second["ts"] - first["ts"]
+            for points in tracks.values()
+            for first, second in pairwise(points)
+        )
+        median_gap = gaps[len(gaps) // 2] if gaps else 0.0
+
+        return {
+            "fusion_id": fusion_id,
+            "since": since,
+            "until": until,
+            "sample_hz": (1.0 / median_gap) if median_gap > 0 else 0.0,
+            "stride": stride,
+            # False whenever the window is returned whole. Unlike the heatmap's
+            # flag this never means data is missing from the end — only that
+            # positions are further apart in time.
+            "thinned": stride > 1,
+            "total_points": len(rows),
+            "tracks": [
+                {
+                    "track_id": track_id,
+                    "start_ts": points[0]["ts"],
+                    "end_ts": points[-1]["ts"],
+                    "points": points,
+                }
+                for track_id, points in sorted(tracks.items())
+            ],
         }
 
     def query_track(self, track_id: str, limit: int = 5000) -> list[dict[str, object]]:
