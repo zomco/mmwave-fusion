@@ -10,6 +10,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 from .coordinator import FusionCoordinator
+from .services import async_register_services, async_unregister_services
 from .websocket_api import async_register_websocket_api
 
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
@@ -41,6 +42,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_initialize()
     hass.data.setdefault(DOMAIN, coordinator)
     async_register_websocket_api(hass, coordinator)
+    async_register_services(hass, coordinator)
 
     # Forwarded after async_initialize so the platforms see every system
     # restored from storage; systems created later over the WebSocket API
@@ -60,6 +62,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
+        async_unregister_services(hass)
         coordinator: FusionCoordinator = hass.data.pop(DOMAIN)
         await coordinator.async_shutdown()
     return unloaded

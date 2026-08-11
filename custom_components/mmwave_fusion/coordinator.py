@@ -158,6 +158,56 @@ class FusionCoordinator:
                 _LOGGER.exception("Trajectory history prune failed")
             await asyncio.sleep(PRUNE_INTERVAL_S)
 
+    async def async_vacuum(self) -> dict[str, int]:
+        """Reclaim the disk space pruning freed. Blocking, so off the loop."""
+
+        result = await self.hass.async_add_executor_job(self.trajectory_store.vacuum)
+        _LOGGER.info(
+            "Vacuumed trajectory store: %.1f MB -> %.1f MB (%.1f MB reclaimed)",
+            result["before"] / 1e6,
+            result["after"] / 1e6,
+            result["reclaimed"] / 1e6,
+        )
+        return result
+
+    async def async_prune_now(self) -> dict[str, int]:
+        """Run the retention sweep immediately instead of waiting six hours."""
+
+        removed = await self.hass.async_add_executor_job(
+            self.trajectory_store.prune,
+            time.time(),
+            DEFAULT_POINT_RETENTION_DAYS * 86400.0,
+            DEFAULT_EVENT_RETENTION_DAYS * 86400.0,
+        )
+        _LOGGER.info(
+            "Pruned history on request: %s track points, %s tracks, %s events",
+            removed["track_points"],
+            removed["tracks"],
+            removed["events"],
+        )
+        return removed
+
+    def reset_tracks(self, fusion_id: str | None = None) -> list[str]:
+        """Drop every in-flight track, for one system or all of them.
+
+        The tracker holds position and velocity across frames, which is the
+        point of it — but that also means a bad calibration, or furniture moved
+        while it was running, leaves ghosts that coast for as long as their TTL
+        keeps renewing. This is the "start again from what the radars can see
+        right now" button, and it touches only live state: nothing recorded is
+        deleted.
+        """
+
+        targets = [fusion_id] if fusion_id else list(self.systems)
+        reset: list[str] = []
+        for target in targets:
+            system = self.systems.get(target)
+            if system is None:
+                continue
+            system.engine.reset()
+            reset.append(target)
+        return reset
+
     async def async_remove(self, fusion_id: str) -> bool:
         system = self.systems.pop(fusion_id, None)
         self.configs.pop(fusion_id, None)

@@ -100,6 +100,56 @@ class TrajectoryStore:
                 self._connection.close()
                 self._connection = None
 
+    def size_bytes(self) -> int:
+        """Bytes the store occupies on disk, write-ahead log included.
+
+        The -wal file is counted because it is real disk usage and can run to
+        tens of megabytes between checkpoints; reporting only the main file
+        would understate what a full disk is about to be full of.
+        """
+
+        total = 0
+        for suffix in ("", "-wal", "-shm"):
+            candidate = self.path.with_name(self.path.name + suffix)
+            if candidate.exists():
+                total += candidate.stat().st_size
+        return total
+
+    def vacuum(self) -> dict[str, int]:
+        """Rebuild the database file, returning the bytes reclaimed.
+
+        prune() deletes rows, but SQLite keeps the freed pages for reuse rather
+        than shrinking the file — so a store that grew to hundreds of megabytes
+        before retention existed stays that size forever without this. That is
+        why prune()'s own docstring ends by telling you to run VACUUM by hand;
+        this is that, callable.
+
+        Two things make it more than one line. VACUUM cannot run inside a
+        transaction, so it needs isolation_level None rather than the connection
+        the rest of the class shares. And it writes a complete copy before
+        swapping, so it briefly needs as much free disk as the database itself —
+        worth knowing before firing it at a nearly full SD card.
+        """
+
+        with self._lock:
+            connection = self._require_connection()
+            previous_isolation = connection.isolation_level
+            try:
+                connection.isolation_level = None
+                # Fold the write-ahead log into the main file first, so the two
+                # measurements describe the same thing. Skipping this makes the
+                # total appear to grow across a vacuum — the -wal shrinks to
+                # nothing while the main file absorbs it, and whichever side you
+                # sampled first wins.
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                before = self.size_bytes()
+                connection.execute("VACUUM")
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                after = self.size_bytes()
+            finally:
+                connection.isolation_level = previous_isolation
+        return {"before": before, "after": after, "reclaimed": before - after}
+
     def start_track(self, fusion_id: str, track: FusedTrack) -> None:
         with self._lock, self._require_connection() as connection:
             connection.execute(
