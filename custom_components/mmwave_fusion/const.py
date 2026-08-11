@@ -29,6 +29,11 @@ DEFAULT_POINT_RETENTION_DAYS = 7
 DEFAULT_EVENT_RETENTION_DAYS = 90
 PRUNE_INTERVAL_S = 6 * 3600
 
+# How often radar health is checked against the Repairs page. The snapshot
+# itself is rebuilt every tick; this only governs how often issues are
+# raised or cleared, and none of the conditions matter on a shorter scale.
+ISSUE_CHECK_INTERVAL_S = 30.0
+
 EVENT_TYPE = "mmwave_fusion_event"
 SIGNAL_UPDATE = "mmwave_fusion_update"
 
