@@ -1,0 +1,97 @@
+blueprint:
+  name: MMWave Fusion — light follows zone presence
+  description: >-
+    Turn a light on while a fusion zone is occupied and off once it is empty.
+
+
+    **Why this is not the motion-light blueprint.** A PIR sensor reports
+    *movement*, so every motion-light automation needs a timeout, and every
+    timeout is a compromise: too short and the light dies on someone reading,
+    too long and it burns for ten minutes after they leave. A fused mmWave zone
+    reports *presence* — someone sitting perfectly still is still there — so
+    there is nothing to guess. The grace period below is insurance against a
+    single dropped frame, not a motion timeout.
+
+
+    Needs the MMWave Fusion integration and at least one zone with a polygon.
+    Zone sensors are named
+    `binary_sensor.mmwave_fusion_<system>_<zone>_occupied`.
+  domain: automation
+  source_url: https://github.com/zomco/mmwave-fusion/blob/main/blueprints/automation/mmwave_fusion/zone_presence_light.yaml
+  input:
+    zone_sensor:
+      name: Zone occupancy sensor
+      description: The fusion zone this light follows.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              integration: mmwave_fusion
+    target_light:
+      name: Light
+      selector:
+        target:
+          entity:
+            - domain: light
+    grace_period:
+      name: Grace period
+      description: >-
+        How long the zone must stay empty before the light goes off. A few
+        seconds is usually right. Needing more than a minute means there is a
+        calibration problem being worked around rather than solved.
+      default:
+        seconds: 10
+      selector:
+        duration: {}
+    only_when_dark:
+      name: Only when dark
+      description: >-
+        Optional. When set, the light only comes on while this entity is `on`.
+        A sun-elevation binary sensor, a lux threshold helper, or anything else
+        that answers "is it dark enough to want this".
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain:
+                - binary_sensor
+                - input_boolean
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  # Read into a variable so the condition below can handle "not set" without a
+  # second branch. Left empty the input is an empty list, and `entity_id: []`
+  # on a state condition is rejected at config validation — which is why this
+  # is a template condition rather than the more obvious state one.
+  only_when_dark: !input only_when_dark
+
+trigger:
+  - platform: state
+    entity_id: !input zone_sensor
+    to: "on"
+    id: occupied
+  - platform: state
+    entity_id: !input zone_sensor
+    to: "off"
+    for: !input grace_period
+    id: empty
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: occupied
+          - condition: template
+            value_template: >-
+              {{ only_when_dark | length == 0 or is_state(only_when_dark, 'on') }}
+        sequence:
+          - service: light.turn_on
+            target: !input target_light
+      - conditions:
+          - condition: trigger
+            id: empty
+        sequence:
+          - service: light.turn_off
+            target: !input target_light
