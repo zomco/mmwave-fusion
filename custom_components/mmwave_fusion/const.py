@@ -14,7 +14,8 @@ DOMAIN = "mmwave_fusion"
 # update push that the per-zone entities read. 3 adds
 # mmwave_fusion/query_replay. All are additions, so an older card still works —
 # it simply does not ask for them.
-API_VERSION = 3
+# 4 adds transactional runtime calibration and authoritative profile resolution.
+API_VERSION = 4
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
 

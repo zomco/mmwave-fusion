@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from math import isfinite
 from typing import Any
 
@@ -34,11 +35,19 @@ def normalize_calibration_profile(
     calibration: dict[str, float | list[object]] = {}
     for key in CALIBRATION_KEYS:
         value = raw_calibration.get(key)
-        if not isinstance(value, (int, float)) or not isfinite(float(value)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
             raise ValueError(f"calibration.{key} must be a finite number")
         calibration[key] = round(float(value), 3)
-    polygon = raw_calibration.get("polygon")
-    calibration["polygon"] = polygon if isinstance(polygon, list) else []
+    polygon = raw_calibration.get("polygon", [])
+    if not isinstance(polygon, list) or any(
+        not isinstance(point, dict) or any(
+            isinstance(point.get(axis), bool)
+            or not isinstance(point.get(axis), (int, float))
+            or not isfinite(float(point[axis])) for axis in ("x", "y")
+        ) for point in polygon
+    ):
+        raise ValueError("calibration.polygon must contain finite x/y points")
+    calibration["polygon"] = deepcopy(polygon)
     residual = raw.get("residual_cm")
     if residual is not None and (
         not isinstance(residual, (int, float))
@@ -57,3 +66,38 @@ def normalize_calibration_profile(
         "residual_cm": round(float(residual), 2) if residual is not None else None,
         "updated_at": float(now if now is not None else time.time()),
     }
+
+
+def resolve_calibration_profiles(
+    config: dict[str, Any], profiles: dict[str, dict[str, Any]], *, migrate: bool = False
+) -> dict[str, Any]:
+    """Resolve authoritative profiles without letting an old card overwrite them.
+
+    The caller owns the copied profile map and persists migrations in the same
+    transaction as the config. Entity-only radars retain a system-local pose.
+    """
+    resolved = deepcopy(config)
+    for radar in resolved["radars"]:
+        device_id = radar.get("device_id")
+        profile_id = radar.get("calibration_profile_id") or (f"device:{device_id}" if device_id else None)
+        profile = profiles.get(profile_id) if profile_id else None
+        if not profile and radar.get("calibration_profile_id"):
+            # A deleted/unknown explicit binding is not permission to overwrite
+            # the canonical profile with a stale inline snapshot.
+            profile_id = f"device:{device_id}" if device_id else None
+            profile = profiles.get(profile_id) if profile_id else None
+        if profile and (profile["device_id"] != device_id or profile["radar_model"] != radar["radar_model"]):
+            raise ValueError(f"Calibration profile does not match radar {radar['id']}")
+        if not profile and device_id and migrate:
+            profile_id = f"device:{device_id}"
+            profile = normalize_calibration_profile({
+                "profile_id": profile_id, "device_id": device_id,
+                "radar_model": radar["radar_model"], "name": radar["id"],
+                "calibration": radar["calibration"],
+            })
+            profiles[profile_id] = profile
+        if profile:
+            radar.update(calibration=deepcopy(profile["calibration"]),
+                         calibration_profile_id=profile_id,
+                         calibration_profile_revision=profile["revision"])
+    return resolved

@@ -7,6 +7,7 @@ import contextlib
 import logging
 import re
 import time
+from copy import deepcopy
 from collections.abc import Callable
 from datetime import datetime
 from math import ceil
@@ -19,6 +20,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     API_VERSION,
@@ -51,7 +53,7 @@ from .fusion import (
     observations_in_room,
     transform_point,
 )
-from .profiles import normalize_calibration_profile
+from .profiles import CALIBRATION_KEYS, normalize_calibration_profile, resolve_calibration_profiles
 from .quality import TrajectoryQualityEngine
 from .repairs import RadarIssueReporter
 from .storage import TrajectoryStore
@@ -71,6 +73,7 @@ class FusionCoordinator:
         self.systems: dict[str, FusionSystem] = {}
         self.configs: dict[str, dict[str, Any]] = {}
         self.calibration_profiles: dict[str, dict[str, Any]] = {}
+        self._calibration_lock = asyncio.Lock()
         self._prune_task: asyncio.Task[None] | None = None
         self.point_retention_days: float = DEFAULT_POINT_RETENTION_DAYS
         self.event_retention_days: float = DEFAULT_EVENT_RETENTION_DAYS
@@ -113,14 +116,43 @@ class FusionCoordinator:
                         _LOGGER.error(
                             "Ignoring invalid stored fusion system %s: %s", fusion_id, error
                         )
+        # Persist profile migrations performed while restoring legacy systems.
+        if self.calibration_profiles != profiles:
+            await self._async_save()
 
     async def async_configure(
         self, config: dict[str, Any], *, persist: bool = True
     ) -> dict[str, Any]:
+        async with self._calibration_lock:
+            return await self._async_configure(config, persist=persist)
+
+    async def _async_configure(
+        self, config: dict[str, Any], *, persist: bool = True
+    ) -> dict[str, Any]:
         normalized = normalize_config(config)
         fusion_id = normalized["fusion_id"]
+        profiles = deepcopy(self.calibration_profiles)
+        # Preserve poses saved through the runtime workspace for entity-only
+        # radars too. An ordinary card configure is never a calibration write.
+        previous_config = self.configs.get(fusion_id, {})
+        previous_radars = {r["id"]: r for r in previous_config.get("radars", [])}
+        for radar in normalized["radars"]:
+            previous_radar = previous_radars.get(radar["id"])
+            if previous_radar and previous_radar.get("_calibration_managed") and self._radar_binding(previous_radar) == self._radar_binding(radar):
+                radar["calibration"] = deepcopy(previous_radar["calibration"])
+                radar["_calibration_managed"] = True
+        normalized = resolve_calibration_profiles(normalized, profiles, migrate=True)
+        normalized["calibration_revision"] = previous_config.get("calibration_revision", config.get("calibration_revision", 0))
+        if previous_config and any(normalized.get(key) != previous_config.get(key) for key in ("room_w", "room_d", "radars")):
+            normalized["calibration_revision"] += 1
         if self.configs.get(fusion_id) == normalized and fusion_id in self.systems:
             return self.systems[fusion_id].status()
+        if persist:
+            await self.config_store.async_save({
+                "systems": {**self.configs, fusion_id: normalized},
+                "calibration_profiles": profiles,
+            })
+        self.calibration_profiles = profiles
         previous = self.systems.pop(fusion_id, None)
         if previous is not None:
             await previous.async_stop()
@@ -130,9 +162,12 @@ class FusionCoordinator:
         self.configs[fusion_id] = normalized
         await system.async_start()
         async_dispatcher_send(self.hass, SIGNAL_SYSTEM_ADDED, fusion_id)
-        if persist:
-            await self._async_save()
         return system.status()
+
+    @staticmethod
+    def _radar_binding(radar: dict[str, Any]) -> tuple:
+        return (radar.get("device_id"), radar["radar_model"], radar.get("frame_entity"),
+                repr(radar.get("targets")))
 
     async def async_shutdown(self) -> None:
         if self._prune_task is not None:
@@ -251,23 +286,133 @@ class FusionCoordinator:
 
     async def async_upsert_calibration_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
         """Create or update one device-level calibration profile."""
+        async with self._calibration_lock:
+            profile_id = str(profile.get("profile_id") or "").strip()
+            previous = self.calibration_profiles.get(profile_id)
+            expected = profile.get("expected_revision")
+            if expected is not None and expected != (previous or {}).get("revision", 0):
+                raise ValueError("Calibration changed elsewhere; reload before applying")
+            normalized = normalize_calibration_profile(profile, previous)
+            profiles = {**self.calibration_profiles, profile_id: normalized}
+            await self._commit_calibrations(deepcopy(self.configs), profiles)
+            return normalized
 
-        profile_id = str(profile.get("profile_id") or "").strip()
-        normalized = normalize_calibration_profile(
-            profile,
-            self.calibration_profiles.get(profile_id),
-        )
-        self.calibration_profiles[profile_id] = normalized
-        await self._async_save()
-        return normalized
+    async def _commit_calibrations(self, configs: dict, profiles: dict) -> None:
+        """Commit all HA poses once, then update live engines without stopping cameras."""
+        for fusion_id, config in list(configs.items()):
+            resolved = resolve_calibration_profiles(config, profiles)
+            if resolved["radars"] != self.configs[fusion_id]["radars"]:
+                resolved["calibration_revision"] = self.configs[fusion_id].get("calibration_revision", 0) + 1
+            configs[fusion_id] = resolved
+        await self.config_store.async_save({"systems": configs, "calibration_profiles": profiles})
+        previous_configs = self.configs
+        self.configs, self.calibration_profiles = configs, profiles
+        for fusion_id, config in configs.items():
+            if config == previous_configs[fusion_id]:
+                continue
+            system = self.systems.get(fusion_id)
+            if system:
+                system.config = config
+                system._radars = {r["id"]: r for r in config["radars"]}
+                system.engine.reset()
+                system._pending.clear()
+                system._last_signatures.clear()
+                # A pose change must not finalize pre-calibration tracks as
+                # traversal events or join their history onto new positions.
+                system.events = ZoneEventEngine(fusion_id, config["zones"])
+                system.quality = TrajectoryQualityEngine(fusion_id, float(config["room_w"]), float(config["room_d"]), config["quality"])
+
+    async def async_apply_calibrations(
+        self, fusion_id: str, radars: list[dict[str, Any]], expected_revision: int,
+        *, sync_devices: bool = True,
+    ) -> dict[str, Any]:
+        async with self._calibration_lock:
+            current = self.configs.get(fusion_id)
+            if current is None:
+                raise ValueError("Fusion system is not configured")
+            if current.get("calibration_revision", 0) != expected_revision:
+                raise ValueError("Calibration changed elsewhere; reload before applying")
+            by_id = {r["id"]: r for r in current["radars"]}
+            if len(radars) != len(by_id) or {r.get("id") for r in radars} != set(by_id):
+                raise ValueError("Calibration must include every configured radar exactly once")
+            configs, profiles = deepcopy(self.configs), deepcopy(self.calibration_profiles)
+            seen_devices: set[str] = set()
+            for patch in radars:
+                radar = next(r for r in configs[fusion_id]["radars"] if r["id"] == patch["id"])
+                if self._radar_binding(normalize_config({"radars": [patch]})["radars"][0]) != self._radar_binding(radar):
+                    raise ValueError("Radar binding changed; reload before applying")
+                device_id = radar.get("device_id")
+                if device_id and device_id in seen_devices:
+                    raise ValueError("One device cannot have two different calibration entries")
+                if device_id:
+                    seen_devices.add(device_id)
+                profile_id = radar.get("calibration_profile_id") or f"device:{device_id}"
+                previous = profiles.get(profile_id) if device_id else None
+                if device_id and patch.get("calibration_profile_revision", 0) != (previous or {}).get("revision", 0):
+                    raise ValueError("Calibration profile changed elsewhere; reload before applying")
+                normalized = normalize_calibration_profile({
+                    "profile_id": profile_id if device_id else f"fusion:{fusion_id}:{radar['id']}",
+                    "device_id": device_id or radar["id"], "radar_model": radar["radar_model"],
+                    "name": radar["id"], "calibration": patch.get("calibration"),
+                    "residual_cm": patch.get("residual_cm"),
+                }, previous)
+                radar["calibration"] = normalized["calibration"]
+                radar["_calibration_managed"] = True
+                if device_id:
+                    profiles[profile_id] = normalized
+                    radar["calibration_profile_id"] = profile_id
+            await self._commit_calibrations(configs, profiles)
+            saved = deepcopy(self.configs[fusion_id])
+            # Services are deliberately after the durable commit. Devices
+            # cannot participate in a storage transaction; report each failure.
+            results = []
+            for radar in saved["radars"]:
+                failures = await self._sync_mount(radar) if sync_devices else []
+                results.append({"id": radar["id"], "status": "failed" if failures else "synced" if sync_devices else "skipped", "failures": failures})
+            return {"config": saved, "devices": results}
+
+    async def _sync_mount(self, radar: dict[str, Any]) -> list[str]:
+        registry = er.async_get(self.hass)
+        device_id = radar.get("device_id")
+        if not device_id:
+            return ["No device binding; saved in HA only"]
+        entries = [entry for entry in registry.entities.values() if entry.device_id == device_id]
+        failures: list[str] = []
+        for key in CALIBRATION_KEYS:
+            suffix = "mount_" + key.removeprefix("radar_")
+            matches = [entry.entity_id for entry in entries if entry.entity_id.startswith("number.") and (
+                entry.entity_id.endswith("_" + suffix) or str(entry.unique_id).endswith("_" + suffix))]
+            if len(matches) != 1:
+                failures.append(f"{suffix}: missing or ambiguous entity")
+                continue
+            entity_id = matches[0]
+            state = self.hass.states.get(entity_id)
+            value = radar["calibration"][key]
+            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                failures.append(f"{entity_id}: unavailable")
+                continue
+            if value < float(state.attributes.get("min", float("-inf"))) or value > float(state.attributes.get("max", float("inf"))):
+                failures.append(f"{entity_id}: outside device range")
+                continue
+            try:
+                async with asyncio.timeout(10):
+                    await self.hass.services.async_call("number", "set_value", {"entity_id": entity_id, "value": value}, blocking=True)
+            except Exception as error:  # HA remains authoritative when a device is offline.
+                failures.append(f"{entity_id}: {error}")
+        return failures
 
     async def async_remove_calibration_profile(self, profile_id: str) -> bool:
         """Remove a reusable profile without changing existing config snapshots."""
 
-        removed = self.calibration_profiles.pop(profile_id, None) is not None
-        if removed:
-            await self._async_save()
-        return removed
+        async with self._calibration_lock:
+            if any(r.get("calibration_profile_id") == profile_id for c in self.configs.values() for r in c["radars"]):
+                raise ValueError("Calibration profile is in use")
+            profiles = dict(self.calibration_profiles)
+            removed = profiles.pop(profile_id, None) is not None
+            if removed:
+                await self.config_store.async_save({"systems": self.configs, "calibration_profiles": profiles})
+                self.calibration_profiles = profiles
+            return removed
 
     def list_calibration_profiles(self) -> list[dict[str, Any]]:
         """Return profiles newest first."""
@@ -902,6 +1047,9 @@ class FusionSystem:
                     "in_room_observations": in_room_count,
                     "in_room_ratio": round(in_room_ratio, 4) if in_room_ratio is not None else None,
                     "calibration_warning": calibration_warning,
+                    "calibration": radar["calibration"],
+                    "calibration_profile_id": radar.get("calibration_profile_id"),
+                    "calibration_profile_revision": radar.get("calibration_profile_revision"),
                 }
             )
         return health

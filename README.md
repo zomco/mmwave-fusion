@@ -299,3 +299,7 @@ Assistant installation.
 ## License
 
 MIT
+
+### Calibration consistency (API v4)
+
+Runtime calibration changes are saved transactionally and shared through device calibration profiles. Revision checks reject stale writes; ordinary card configuration preserves managed poses. Applying new poses clears incompatible tracking history without restarting camera recording.

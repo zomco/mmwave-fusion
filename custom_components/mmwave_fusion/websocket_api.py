@@ -33,6 +33,7 @@ def async_register_websocket_api(hass: HomeAssistant, coordinator: FusionCoordin
     websocket_api.async_register_command(hass, ws_list_calibration_profiles)
     websocket_api.async_register_command(hass, ws_upsert_calibration_profile)
     websocket_api.async_register_command(hass, ws_remove_calibration_profile)
+    websocket_api.async_register_command(hass, ws_apply_calibrations)
 
 
 @websocket_api.require_admin
@@ -322,5 +323,30 @@ async def ws_remove_calibration_profile(
     msg: dict[str, Any],
 ) -> None:
     coordinator: FusionCoordinator = hass.data[DOMAIN]
-    removed = await coordinator.async_remove_calibration_profile(msg["profile_id"])
+    try:
+        removed = await coordinator.async_remove_calibration_profile(msg["profile_id"])
+    except ValueError as error:
+        connection.send_error(msg["id"], "invalid_profile", str(error))
+        return
     connection.send_result(msg["id"], {"removed": removed})
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): "mmwave_fusion/apply_calibrations",
+    vol.Required("fusion_id"): str,
+    vol.Required("radars"): [dict],
+    vol.Required("expected_revision"): vol.All(int, vol.Range(min=0)),
+    vol.Optional("sync_devices", default=True): bool,
+})
+@websocket_api.async_response
+async def ws_apply_calibrations(hass, connection, msg) -> None:
+    coordinator: FusionCoordinator = hass.data[DOMAIN]
+    try:
+        result = await coordinator.async_apply_calibrations(
+            msg["fusion_id"], msg["radars"], msg["expected_revision"], sync_devices=msg["sync_devices"]
+        )
+    except ValueError as error:
+        connection.send_error(msg["id"], "invalid_calibration", str(error))
+        return
+    connection.send_result(msg["id"], result)
