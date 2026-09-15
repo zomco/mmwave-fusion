@@ -303,3 +303,11 @@ MIT
 ### Calibration consistency (API v4)
 
 Runtime calibration changes are saved transactionally and shared through device calibration profiles. Revision checks reject stale writes; ordinary card configuration preserves managed poses. Applying new poses clears incompatible tracking history without restarting camera recording.
+
+### Runtime backpressure
+
+Each radar keeps only its latest complete frame between fusion ticks, including empty frames.
+Slow database writes cannot accumulate old frames as simultaneous targets. The tracker also
+coalesces radar slots and removes expired observations/tracks before allocating its matching
+matrix, so a delayed tick does not monopolize Home Assistant’s event loop.
+Retention has time indexes and deletes at most 1,000 rows per transaction, releasing the writer lock between batches so cleanup does not stall live tracking.

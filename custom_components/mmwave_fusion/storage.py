@@ -46,6 +46,8 @@ class TrajectoryStore:
                 CREATE INDEX IF NOT EXISTS idx_tracks_fusion_time
                     ON tracks(fusion_id, start_ts DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_tracks_end_time ON tracks(end_ts);
+
                 CREATE TABLE IF NOT EXISTS track_points (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     track_id TEXT NOT NULL,
@@ -60,6 +62,8 @@ class TrajectoryStore:
                 CREATE INDEX IF NOT EXISTS idx_track_points_track_time
                     ON track_points(track_id, ts);
 
+                CREATE INDEX IF NOT EXISTS idx_track_points_time ON track_points(ts);
+
                 CREATE TABLE IF NOT EXISTS events (
                     event_id TEXT PRIMARY KEY,
                     fusion_id TEXT NOT NULL,
@@ -73,6 +77,8 @@ class TrajectoryStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_fusion_time
                     ON events(fusion_id, ts DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_events_time ON events(ts);
 
                 CREATE TABLE IF NOT EXISTS clips (
                     clip_id TEXT PRIMARY KEY,
@@ -308,24 +314,29 @@ class TrajectoryStore:
         point_cutoff = now - point_max_age_s
         event_cutoff = now - event_max_age_s
         removed = {"track_points": 0, "tracks": 0, "events": 0}
-        with self._lock, self._require_connection() as connection:
-            removed["track_points"] = connection.execute(
-                "DELETE FROM track_points WHERE ts < ?", (point_cutoff,)
-            ).rowcount
-            # Only tracks that have finished; an open track still accrues
-            # points regardless of when it started.
-            removed["tracks"] = connection.execute(
-                "DELETE FROM tracks WHERE end_ts IS NOT NULL AND end_ts < ?",
-                (event_cutoff,),
-            ).rowcount
-            removed["events"] = connection.execute(
-                """
-                DELETE FROM events
-                WHERE ts < ?
-                  AND event_id NOT IN (SELECT event_id FROM clips)
-                """,
-                (event_cutoff,),
-            ).rowcount
+        # Bound each write transaction and release the shared writer lock.
+        # A full-history DELETE on Windows bind mounts can take minutes and
+        # otherwise stalls every live track write for the entire sweep.
+        predicates = {
+            "track_points": ("ts < ?", point_cutoff),
+            "tracks": ("end_ts IS NOT NULL AND end_ts < ?", event_cutoff),
+            "events": (
+                "ts < ? AND NOT EXISTS (SELECT 1 FROM clips WHERE clips.event_id = events.event_id)",
+                event_cutoff,
+            ),
+        }
+        for table, (predicate, cutoff) in predicates.items():
+            while True:
+                with self._lock, self._require_connection() as connection:
+                    count = connection.execute(
+                        f"DELETE FROM {table} WHERE rowid IN "
+                        f"(SELECT rowid FROM {table} WHERE {predicate} LIMIT 1000)",
+                        (cutoff,),
+                    ).rowcount
+                removed[table] += count
+                if count < 1000:
+                    break
+                time.sleep(0.01)  # Let waiting live writers acquire the lock.
         return removed
 
     def query_events(

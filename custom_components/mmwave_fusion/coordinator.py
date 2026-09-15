@@ -468,7 +468,7 @@ class FusionSystem:
             float(config["room_d"]),
             config["quality"],
         )
-        self._pending: list[Observation] = []
+        self._pending: dict[str, list[Observation]] = {}
         self._radar_by_entity: dict[str, str] = {}
         self._radars = {str(radar["id"]): radar for radar in config["radars"]}
         self._last_signatures: dict[str, tuple[str, ...]] = {}
@@ -650,6 +650,7 @@ class FusionSystem:
                 or presence.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
                 or presence.state != STATE_ON
             ):
+                self._pending.pop(radar_id, None)
                 return
 
         signature: list[str] = []
@@ -709,7 +710,7 @@ class FusionSystem:
         if frame_signature and frame_signature == self._last_signatures.get(radar_id):
             return
         self._last_signatures[radar_id] = frame_signature
-        self._pending.extend(observations)
+        self._pending[radar_id] = observations
 
     @callback
     def _read_atomic_frame(self, radar_id: str, radar: dict[str, Any]) -> bool:
@@ -718,6 +719,7 @@ class FusionSystem:
             return False
         state = self.hass.states.get(str(frame_entity))
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._pending.pop(radar_id, None)
             return False
         if time.time() - state.last_updated.timestamp() > float(radar["frame_stale_after_s"]):
             return False
@@ -732,11 +734,12 @@ class FusionSystem:
         scale = float(radar["frame_coordinate_scale"])
         timestamp = state.last_updated.timestamp()
         calibration = radar["calibration"]
+        observations: list[Observation] = []
         for slot, target in enumerate(frame.targets):
             x, y, _ = transform_point(
                 target.x * scale, target.y * scale, target.z * scale, calibration
             )
-            self._pending.append(
+            observations.append(
                 Observation(
                     radar_id=radar_id,
                     slot=slot,
@@ -749,6 +752,7 @@ class FusionSystem:
                     source_timestamp=frame.source_timestamp,
                 )
             )
+        self._pending[radar_id] = observations
         return True
 
     async def _tick_loop(self) -> None:
@@ -766,7 +770,17 @@ class FusionSystem:
 
     async def _step(self) -> None:
         now = time.time()
-        observations, self._pending = self._pending, []
+        # A delayed storage write must not turn consecutive radar frames into
+        # thousands of simultaneous targets on the HA event loop.
+        pending, self._pending = self._pending, {}
+        observations = [
+            observation
+            for frame in pending.values()
+            for observation in frame
+            if 0 <= now - observation.timestamp <= float(
+                self._radars[observation.radar_id]["frame_stale_after_s"]
+            )
+        ]
         room_w = float(self.config["room_w"])
         room_d = float(self.config["room_d"])
         for observation in observations:

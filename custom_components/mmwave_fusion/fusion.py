@@ -8,7 +8,7 @@ identity swaps produced by greedy nearest-neighbour association.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import cos, hypot, pi, sin
+from math import cos, hypot, isfinite, pi, sin
 from uuid import uuid4
 
 
@@ -148,6 +148,24 @@ class FusionEngine:
         self._tracks.clear()
 
     def step(self, observations: list[Observation], now: float) -> StepResult:
+        # Keep only the latest observation for a physical radar slot, even if
+        # a caller supplies a backlog. Expire tracks before allocating costs.
+        latest: dict[tuple[str, int], Observation] = {}
+        for observation in observations:
+            if not all(isfinite(value) for value in (observation.x, observation.y, observation.timestamp, observation.weight)):
+                continue
+            if not 0 <= now - observation.timestamp <= self.track_ttl_s:
+                continue
+            key = (observation.radar_id, observation.slot)
+            if key not in latest or observation.timestamp >= latest[key].timestamp:
+                latest[key] = observation
+        observations = list(latest.values())
+        ended = []
+        for track_id, track in tuple(self._tracks.items()):
+            if now - track.last_seen > self.track_ttl_s:
+                if track.confirmed:
+                    ended.append(track_id)
+                del self._tracks[track_id]
         prediction_dt = {track_id: track.predict(now) for track_id, track in self._tracks.items()}
         clusters = self._cluster_observations(observations)
         assignments = self._associate(clusters, prediction_dt)
@@ -216,13 +234,6 @@ class FusionEngine:
             self._tracks[track.track_id] = track
             if track.confirmed:
                 started.append(track.public())
-
-        ended: list[str] = []
-        for track_id, track in tuple(self._tracks.items()):
-            if now - track.last_seen > self.track_ttl_s:
-                if track.confirmed:
-                    ended.append(track_id)
-                del self._tracks[track_id]
 
         public_tracks = tuple(track.public() for track in self._tracks.values() if track.confirmed)
         return StepResult(public_tracks, tuple(started), tuple(ended))
