@@ -87,8 +87,9 @@ keep the README in step if it changes.
 ### Storage
 
 `track_points` dominates the database — roughly 51 MB/day on the development
-instance. Retention runs every 6 hours. Clips are never pruned because the row
-is the only pointer to the file on disk.
+instance. Retention runs every 6 hours. Clip files under `/media` are deleted
+with their rows after `clip_retention_days` (default 30). Events that still
+have a clip row are kept so the file is not orphaned.
 
 Only two summary entities go to the HA Recorder. Never route trajectory data
 through it.

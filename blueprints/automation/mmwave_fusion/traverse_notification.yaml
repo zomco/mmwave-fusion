@@ -18,10 +18,11 @@ blueprint:
     even a clean crossing is not always worth a phone buzzing.
 
 
-    Requires the MMWave Fusion integration. If a camera is configured for the
-    zone, the recorded clip is attached when it is ready — but the notification
-    is sent either way rather than waiting, because a late notification about
-    someone walking through the hall is not worth much.
+    Requires the MMWave Fusion integration. The first notification is sent as
+    soon as the traverse is scored. If a camera is configured for the zone, a
+    second notification attaches the MP4 once `mmwave_fusion_clip_ready` fires
+    — the first message is not held back for the recording, because a late
+    notification about someone walking through the hall is not worth much.
   domain: automation
   source_url: https://github.com/zomco/mmwave-fusion/blob/main/blueprints/automation/mmwave_fusion/traverse_notification.yaml
   input:
@@ -62,6 +63,19 @@ blueprint:
       default: Someone crossed the room
       selector:
         text:
+    clip_wait:
+      name: Seconds to wait for a clip
+      description: >-
+        How long to wait for the camera recording after the first notification.
+        A second message with the video is sent if the clip lands in time.
+        Set 0 to skip waiting.
+      default: 45
+      selector:
+        number:
+          min: 0
+          max: 120
+          unit_of_measurement: seconds
+          mode: box
 
 mode: queued
 max: 10
@@ -94,10 +108,35 @@ condition:
       {{ (trigger.event.data.quality_score | int(0)) >= (wanted_score | int(0)) }}
 
 action:
+  - variables:
+      event_id: "{{ trigger.event.data.event_id }}"
+      zone_id: "{{ trigger.event.data.zone_id }}"
+      quality_score: "{{ trigger.event.data.quality_score | int(0) }}"
+      event_time: "{{ trigger.event.data.timestamp | timestamp_custom('%H:%M:%S') }}"
   - service: "notify.{{ notify_service }}"
     data:
       title: !input title
       message: >-
-        {{ trigger.event.data.zone_id }} ·
-        score {{ trigger.event.data.quality_score | int(0) }}/100 ·
-        {{ trigger.event.data.timestamp | timestamp_custom('%H:%M:%S') }}
+        {{ zone_id }} ·
+        score {{ quality_score }}/100 ·
+        {{ event_time }}
+  - wait_for_trigger:
+      - platform: event
+        event_type: mmwave_fusion_clip_ready
+        event_data:
+          event_id: "{{ event_id }}"
+    timeout:
+      seconds: !input clip_wait
+    continue_on_timeout: true
+  - condition: template
+    value_template: "{{ wait.trigger is not none }}"
+  - service: "notify.{{ notify_service }}"
+    data:
+      title: !input title
+      message: >-
+        {{ zone_id }} ·
+        score {{ quality_score }}/100 ·
+        {{ event_time }}
+      data:
+        video: "/media/local/{{ wait.trigger.event.data.clip_path }}"
+        url: "/media/local/{{ wait.trigger.event.data.clip_path }}"

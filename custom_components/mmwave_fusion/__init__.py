@@ -9,9 +9,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    DEFAULT_CLIP_RETENTION_DAYS,
     DEFAULT_EVENT_RETENTION_DAYS,
     DEFAULT_POINT_RETENTION_DAYS,
     DOMAIN,
+    OPTION_CLIP_RETENTION_DAYS,
     OPTION_EVENT_RETENTION_DAYS,
     OPTION_POINT_RETENTION_DAYS,
 )
@@ -47,6 +49,7 @@ def _apply_options(coordinator: FusionCoordinator, entry: ConfigEntry) -> None:
     coordinator.set_retention(
         float(entry.options.get(OPTION_POINT_RETENTION_DAYS, DEFAULT_POINT_RETENTION_DAYS)),
         float(entry.options.get(OPTION_EVENT_RETENTION_DAYS, DEFAULT_EVENT_RETENTION_DAYS)),
+        float(entry.options.get(OPTION_CLIP_RETENTION_DAYS, DEFAULT_CLIP_RETENTION_DAYS)),
     )
 
 

@@ -1,8 +1,11 @@
 """Small, dependency-free multi-radar tracking engine.
 
 The tracker combines an alpha-beta state filter with global minimum-cost
-assignment. This keeps Home Assistant free of NumPy/SciPy while avoiding the
-identity swaps produced by greedy nearest-neighbour association.
+assignment. Same-radar slots that sit on one person are collapsed before
+clustering; unmatched clusters next to an existing track do not mint a new
+identity; confirmed tracks that stay inside the merge gate are fused into the
+older track_id. This keeps Home Assistant free of NumPy/SciPy while avoiding
+the identity swaps produced by greedy nearest-neighbour association.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ class Observation:
     weight: float = 1.0
     frame_id: str | None = None
     source_timestamp: float | None = None
+    range_cm: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +66,7 @@ class StepResult:
     tracks: tuple[FusedTrack, ...]
     started: tuple[FusedTrack, ...]
     ended_track_ids: tuple[str, ...]
+    merged_track_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -133,19 +138,27 @@ class FusionEngine:
         *,
         association_gate_cm: float = 90.0,
         merge_gate_cm: float = 70.0,
-        track_ttl_s: float = 1.2,
+        track_ttl_s: float = 2.0,
         confirm_hits: int = 2,
         min_confirm_sources: int = 1,
+        duplicate_gate_cm: float = 50.0,
+        range_merge_factor: float = 0.08,
+        merge_confirm_s: float = 0.6,
     ) -> None:
         self.association_gate_cm = max(association_gate_cm, 10.0)
         self.merge_gate_cm = max(merge_gate_cm, 10.0)
         self.track_ttl_s = max(track_ttl_s, 0.2)
         self.confirm_hits = max(confirm_hits, 1)
         self.min_confirm_sources = max(min_confirm_sources, 1)
+        self.duplicate_gate_cm = max(duplicate_gate_cm, 0.0)
+        self.range_merge_factor = max(range_merge_factor, 0.0)
+        self.merge_confirm_s = max(merge_confirm_s, 0.0)
         self._tracks: dict[str, _Track] = {}
+        self._merge_since: dict[frozenset[str], float] = {}
 
     def reset(self) -> None:
         self._tracks.clear()
+        self._merge_since.clear()
 
     def step(self, observations: list[Observation], now: float) -> StepResult:
         # Keep only the latest observation for a physical radar slot, even if
@@ -159,7 +172,7 @@ class FusionEngine:
             key = (observation.radar_id, observation.slot)
             if key not in latest or observation.timestamp >= latest[key].timestamp:
                 latest[key] = observation
-        observations = list(latest.values())
+        observations = self._dedupe_same_radar(list(latest.values()))
         ended = []
         for track_id, track in tuple(self._tracks.items()):
             if now - track.last_seen > self.track_ttl_s:
@@ -174,80 +187,215 @@ class FusionEngine:
         started: list[FusedTrack] = []
 
         for track_id, cluster_index in assignments:
-            track = self._tracks[track_id]
-            cluster = clusters[cluster_index]
-            dt = max(prediction_dt.get(track_id, 0.1), 0.05)
-            residual_x = cluster.x - track.x
-            residual_y = cluster.y - track.y
-            source_bonus = min(len(cluster.radar_ids) - 1, 3)
-            alpha = 0.56 + 0.06 * source_bonus
-            beta = 0.10 + 0.02 * source_bonus
-            track.x += alpha * residual_x
-            track.y += alpha * residual_y
-            track.vx += beta * residual_x / dt
-            track.vy += beta * residual_y / dt
-            track.last_seen = cluster.timestamp
-            track.sources = cluster.radar_ids
-            track.seen_sources.update(cluster.radar_ids)
-            track.hits += max(1, len(cluster.radar_ids))
-            confidence_ceiling = (
-                1.0 if len(track.seen_sources) >= self.min_confirm_sources else 0.74
+            started.extend(
+                self._update_track(
+                    self._tracks[track_id],
+                    clusters[cluster_index],
+                    max(prediction_dt.get(track_id, 0.1), 0.05),
+                )
             )
-            track.confidence = min(
-                confidence_ceiling,
-                track.confidence + 0.1 + 0.08 * source_bonus,
-            )
-            was_confirmed = track.confirmed
-            track.confirmed = (
-                track.hits >= self.confirm_hits
-                and len(track.seen_sources) >= self.min_confirm_sources
-            )
-            if track.confirmed and not was_confirmed:
-                started.append(track.public())
 
         for track_id, track in self._tracks.items():
             if track_id not in assigned_tracks:
                 track.confidence = max(0.0, track.confidence - 0.08)
                 track.sources = set()
 
+        preexisting = set(self._tracks)
         for index, cluster in enumerate(clusters):
             if index in assigned_clusters:
                 continue
-            hits = max(1, len(cluster.radar_ids))
-            track = _Track(
-                track_id=uuid4().hex,
-                x=cluster.x,
-                y=cluster.y,
-                vx=0.0,
-                vy=0.0,
-                confidence=min(0.9, 0.35 + 0.18 * len(cluster.radar_ids)),
-                sources=cluster.radar_ids,
-                seen_sources=set(cluster.radar_ids),
-                started_at=cluster.timestamp,
-                last_seen=cluster.timestamp,
-                updated_at=now,
-                hits=hits,
-                confirmed=(
-                    hits >= self.confirm_hits and len(cluster.radar_ids) >= self.min_confirm_sources
-                ),
+            nearest_id, nearest_distance = self._nearest_track(
+                cluster, prediction_dt, allowed=preexisting
             )
-            self._tracks[track.track_id] = track
-            if track.confirmed:
-                started.append(track.public())
+            if nearest_id is None:
+                started.extend(self._birth_track(cluster, now))
+                continue
+            if nearest_id in assigned_tracks:
+                if nearest_distance <= self.merge_gate_cm:
+                    continue
+                started.extend(self._birth_track(cluster, now))
+                continue
+            if nearest_distance <= self.association_gate_cm:
+                assigned_tracks.add(nearest_id)
+                started.extend(
+                    self._update_track(
+                        self._tracks[nearest_id],
+                        cluster,
+                        max(prediction_dt.get(nearest_id, 0.1), 0.05),
+                    )
+                )
+                continue
+            started.extend(self._birth_track(cluster, now))
 
+        merged = self._merge_close_tracks(now)
         public_tracks = tuple(track.public() for track in self._tracks.values() if track.confirmed)
-        return StepResult(public_tracks, tuple(started), tuple(ended))
+        return StepResult(public_tracks, tuple(started), tuple(ended), tuple(merged))
+
+    def _dedupe_same_radar(self, observations: list[Observation]) -> list[Observation]:
+        """Drop extra slots from one radar that sit on top of the same person."""
+
+        if self.duplicate_gate_cm <= 0 or len(observations) < 2:
+            return observations
+        grouped: dict[str, list[Observation]] = {}
+        for observation in observations:
+            grouped.setdefault(observation.radar_id, []).append(observation)
+        kept: list[Observation] = []
+        for group in grouped.values():
+            if len(group) == 1:
+                kept.extend(group)
+                continue
+
+            def score(observation: Observation) -> float:
+                if not self._tracks:
+                    return observation.weight
+                return -min(
+                    hypot(observation.x - track.x, observation.y - track.y)
+                    for track in self._tracks.values()
+                )
+
+            accepted: list[Observation] = []
+            for observation in sorted(group, key=score, reverse=True):
+                if any(
+                    hypot(observation.x - other.x, observation.y - other.y) <= self.duplicate_gate_cm
+                    for other in accepted
+                ):
+                    continue
+                accepted.append(observation)
+            kept.extend(accepted)
+        return kept
+
+    def _pair_merge_gate(self, observation: Observation, cluster: _Cluster) -> float:
+        peak = observation.range_cm or 0.0
+        for item in cluster.observations:
+            if item.range_cm is not None:
+                peak = max(peak, item.range_cm)
+        return self.merge_gate_cm + self.range_merge_factor * peak
+
+    def _update_track(self, track: _Track, cluster: _Cluster, dt: float) -> list[FusedTrack]:
+        residual_x = cluster.x - track.x
+        residual_y = cluster.y - track.y
+        source_bonus = min(len(cluster.radar_ids) - 1, 3)
+        alpha = 0.35 + 0.05 * source_bonus
+        beta = 0.08 + 0.02 * source_bonus
+        track.x += alpha * residual_x
+        track.y += alpha * residual_y
+        track.vx += beta * residual_x / dt
+        track.vy += beta * residual_y / dt
+        track.last_seen = cluster.timestamp
+        track.sources = cluster.radar_ids
+        track.seen_sources.update(cluster.radar_ids)
+        track.hits += max(1, len(cluster.radar_ids))
+        confidence_ceiling = (
+            1.0 if len(track.seen_sources) >= self.min_confirm_sources else 0.74
+        )
+        track.confidence = min(
+            confidence_ceiling,
+            track.confidence + 0.1 + 0.08 * source_bonus,
+        )
+        was_confirmed = track.confirmed
+        track.confirmed = (
+            track.hits >= self.confirm_hits
+            and len(track.seen_sources) >= self.min_confirm_sources
+        )
+        if track.confirmed and not was_confirmed:
+            return [track.public()]
+        return []
+
+    def _birth_track(self, cluster: _Cluster, now: float) -> list[FusedTrack]:
+        hits = max(1, len(cluster.radar_ids))
+        track = _Track(
+            track_id=uuid4().hex,
+            x=cluster.x,
+            y=cluster.y,
+            vx=0.0,
+            vy=0.0,
+            confidence=min(0.9, 0.35 + 0.18 * len(cluster.radar_ids)),
+            sources=cluster.radar_ids,
+            seen_sources=set(cluster.radar_ids),
+            started_at=cluster.timestamp,
+            last_seen=cluster.timestamp,
+            updated_at=now,
+            hits=hits,
+            confirmed=(
+                hits >= self.confirm_hits and len(cluster.radar_ids) >= self.min_confirm_sources
+            ),
+        )
+        self._tracks[track.track_id] = track
+        if track.confirmed:
+            return [track.public()]
+        return []
+
+    def _nearest_track(
+        self,
+        cluster: _Cluster,
+        prediction_dt: dict[str, float],
+        allowed: set[str] | None = None,
+    ) -> tuple[str | None, float]:
+        best_id: str | None = None
+        best_distance = float("inf")
+        for track_id, track in self._tracks.items():
+            if allowed is not None and track_id not in allowed:
+                continue
+            distance = hypot(track.x - cluster.x, track.y - cluster.y)
+            gate = self.association_gate_cm + hypot(track.vx, track.vy) * prediction_dt.get(
+                track_id, 0.0
+            )
+            if distance <= gate and distance < best_distance:
+                best_id = track_id
+                best_distance = distance
+        return best_id, best_distance
+
+    def _merge_close_tracks(self, now: float) -> list[str]:
+        if self.merge_confirm_s <= 0:
+            self._merge_since.clear()
+            return []
+        confirmed = [track for track in self._tracks.values() if track.confirmed]
+        close: set[frozenset[str]] = set()
+        merged: list[str] = []
+        consumed: set[str] = set()
+        for index, left in enumerate(confirmed):
+            if left.track_id in consumed:
+                continue
+            for right in confirmed[index + 1 :]:
+                if right.track_id in consumed:
+                    continue
+                distance = hypot(left.x - right.x, left.y - right.y)
+                if distance > self.merge_gate_cm:
+                    continue
+                pair = frozenset({left.track_id, right.track_id})
+                close.add(pair)
+                first_seen = self._merge_since.setdefault(pair, now)
+                if now - first_seen < self.merge_confirm_s:
+                    continue
+                older, newer = (
+                    (left, right) if left.started_at <= right.started_at else (right, left)
+                )
+                older.seen_sources.update(newer.seen_sources)
+                older.sources.update(newer.sources)
+                older.hits += newer.hits
+                older.confidence = max(older.confidence, newer.confidence)
+                del self._tracks[newer.track_id]
+                merged.append(newer.track_id)
+                consumed.add(newer.track_id)
+                consumed.add(older.track_id)
+                break
+        self._merge_since = {
+            pair: stamp
+            for pair, stamp in self._merge_since.items()
+            if pair in close and all(track_id in self._tracks for track_id in pair)
+        }
+        return merged
 
     def _cluster_observations(self, observations: list[Observation]) -> list[_Cluster]:
         clusters: list[_Cluster] = []
         for observation in sorted(observations, key=lambda item: item.weight, reverse=True):
             best: _Cluster | None = None
-            best_distance = self.merge_gate_cm
+            best_distance = float("inf")
             for cluster in clusters:
                 if observation.radar_id in cluster.radar_ids:
                     continue
                 distance = hypot(observation.x - cluster.x, observation.y - cluster.y)
-                if distance <= best_distance:
+                if distance <= self._pair_merge_gate(observation, cluster) and distance < best_distance:
                     best = cluster
                     best_distance = distance
             if best is None:
@@ -303,6 +451,25 @@ def observations_in_room(
         for observation in observations
         if 0 <= observation.x <= room_w and 0 <= observation.y <= room_d
     ]
+
+
+def observations_inside(
+    observations: list[Observation],
+    room_w: float,
+    room_d: float,
+    polygons: dict[str, list[dict[str, object]]] | None = None,
+) -> list[Observation]:
+    """Keep in-room observations, then apply each radar's installation polygon."""
+
+    kept = observations_in_room(observations, room_w, room_d)
+    if not polygons:
+        return kept
+    result: list[Observation] = []
+    for observation in kept:
+        polygon = polygons.get(observation.radar_id) or []
+        if len(polygon) < 3 or point_in_polygon(observation.x, observation.y, polygon):
+            result.append(observation)
+    return result
 
 
 def _minimum_cost_assignment(costs: list[list[float]]) -> list[tuple[int, int]]:

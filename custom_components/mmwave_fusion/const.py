@@ -23,7 +23,10 @@ DEFAULT_FUSION_ID = "home"
 DEFAULT_RATE_HZ = 10.0
 DEFAULT_ASSOCIATION_GATE_CM = 90.0
 DEFAULT_MERGE_GATE_CM = 70.0
-DEFAULT_TRACK_TTL_S = 1.2
+DEFAULT_TRACK_TTL_S = 2.0
+DEFAULT_DUPLICATE_GATE_CM = 50.0
+DEFAULT_RANGE_MERGE_FACTOR = 0.08
+DEFAULT_MERGE_CONFIRM_S = 0.6
 DEFAULT_FRAME_DEBOUNCE_S = 0.05
 DEFAULT_POINT_FLUSH_S = 1.0
 
@@ -34,6 +37,7 @@ DEFAULT_POINT_FLUSH_S = 1.0
 # reads, so they are kept far longer.
 DEFAULT_POINT_RETENTION_DAYS = 7
 DEFAULT_EVENT_RETENTION_DAYS = 90
+DEFAULT_CLIP_RETENTION_DAYS = 30
 PRUNE_INTERVAL_S = 6 * 3600
 
 # Both windows are settable from the config entry's options. The defaults suit
@@ -41,6 +45,7 @@ PRUNE_INTERVAL_S = 6 * 3600
 # of points, which is the number worth knowing before raising the first one.
 OPTION_POINT_RETENTION_DAYS = "point_retention_days"
 OPTION_EVENT_RETENTION_DAYS = "event_retention_days"
+OPTION_CLIP_RETENTION_DAYS = "clip_retention_days"
 
 # A day is the shortest useful window — the heatmap's default view is a day,
 # and anything less would leave it empty. The upper bounds are there to stop a
@@ -49,6 +54,8 @@ MIN_POINT_RETENTION_DAYS = 1
 MAX_POINT_RETENTION_DAYS = 90
 MIN_EVENT_RETENTION_DAYS = 1
 MAX_EVENT_RETENTION_DAYS = 3650
+MIN_CLIP_RETENTION_DAYS = 1
+MAX_CLIP_RETENTION_DAYS = 365
 
 # How often radar health is checked against the Repairs page. The snapshot
 # itself is rebuilt every tick; this only governs how often issues are
@@ -61,6 +68,7 @@ ISSUE_CHECK_INTERVAL_S = 30.0
 MAX_REPLAY_WINDOW_S = 6 * 3600
 
 EVENT_TYPE = "mmwave_fusion_event"
+CLIP_EVENT_TYPE = "mmwave_fusion_clip_ready"
 SIGNAL_UPDATE = "mmwave_fusion_update"
 
 # Fusion systems are created and destroyed at runtime through the WebSocket

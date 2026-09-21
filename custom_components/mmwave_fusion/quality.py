@@ -80,6 +80,12 @@ class TrajectoryQualityEngine:
         for event in events:
             self._events.setdefault(str(event["track_id"]), []).append(event)
 
+    def discard(self, track_id: str) -> None:
+        """Drop a track that was merged into another, without scoring it."""
+
+        self._samples.pop(track_id, None)
+        self._events.pop(track_id, None)
+
     def finish(
         self, track_id: str, now: float
     ) -> tuple[dict[str, object], TrajectoryAssessment] | None:

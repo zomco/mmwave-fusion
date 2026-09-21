@@ -105,6 +105,10 @@ its own database (below) to keep the recorder from being flooded.
    using its installation position and yaw/pitch/roll.
 3. Nearby observations from different radars are clustered, then a global
    minimum-cost assignment plus an alpha-beta tracker maintains `track_id`.
+   Same-radar slots that sit on top of each other are collapsed first;
+   unmatched clusters next to an existing track do not mint a new identity;
+   two confirmed tracks that stay within `merge_gate_cm` for `merge_confirm_s`
+   are merged into the older `track_id`.
 4. `track_ttl_s` lets a track survive a brief dropout; `confirm_hits` rejects
    one-off false positives.
 5. Tracks, events and radar calibration health are pushed to the card over
@@ -187,10 +191,12 @@ development instance it reached 1.66 million rows and 276 MB in 5.4 days, about
 | --- | --- |
 | `track_points` | 7 days |
 | `tracks`, `events` | 90 days |
-| `clips` and the events that own them | never pruned |
+| `clips` (MP4 under `/media/mmwave_fusion` plus the row) | 30 days |
 
-Clips are exempt because the row is the only pointer to the recording on disk;
-dropping it would orphan the file rather than reclaim anything.
+Events that still have a clip row are kept so the file is not orphaned. Once
+the clip window expires, the file is deleted and the event can leave on the
+same sweep if it is older than the event window. All three windows are settable
+from the integration's options.
 
 Write frequency is limited by `quality.persist_interval_s`, which drops the
 default 10 Hz fusion rate to at most 2 Hz on disk, and only points backed by an
@@ -266,6 +272,11 @@ checks are emitted as `trajectory` with a reason and are not matched — which i
 the point, because a notification that fires on every reflection off a curtain
 is one people turn off. The minimum score is a second filter for rooms where
 even a clean crossing is not always worth a phone buzzing.
+
+The first notification is sent immediately. If a camera is configured for the
+zone, a second one attaches `/media/local/<clip_path>` when
+`mmwave_fusion_clip_ready` fires, rather than delaying the first message for
+the recording.
 
 ---
 

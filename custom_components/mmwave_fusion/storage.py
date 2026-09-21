@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from collections.abc import Iterable
@@ -11,6 +12,8 @@ from pathlib import Path
 from threading import Lock
 
 from .fusion import FusedTrack
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class TrajectoryStore:
@@ -96,6 +99,7 @@ class TrajectoryStore:
                     error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_clips_event ON clips(event_id);
+                CREATE INDEX IF NOT EXISTS idx_clips_requested ON clips(requested_at);
                 """
             )
             self._ensure_column(
@@ -290,7 +294,14 @@ class TrajectoryStore:
             )
             return cursor.rowcount
 
-    def prune(self, now: float, point_max_age_s: float, event_max_age_s: float) -> dict[str, int]:
+    def prune(
+        self,
+        now: float,
+        point_max_age_s: float,
+        event_max_age_s: float,
+        clip_max_age_s: float | None = None,
+        media_root: str | Path = "/media",
+    ) -> dict[str, int]:
         """Delete history older than the retention windows.
 
         Nothing pruned this store before, so it grew for as long as Home
@@ -301,10 +312,11 @@ class TrajectoryStore:
         are metadata, orders of magnitude smaller, and are what the event list
         reads, so they get a long one.
 
-        Clips are never pruned here: their rows point at recordings on disk,
-        and dropping the row would orphan the file rather than reclaim
-        anything. A clip whose event is pruned keeps its row, so the file
-        remains discoverable.
+        Clips are the files under media_root plus the rows that point at them.
+        The file is unlinked first; the row follows so a missing file is not
+        retried forever. Events that still have a clip row are kept so the
+        recording is not orphaned — prune clips before events in the same
+        sweep, and an event whose clip just expired can leave in the same pass.
 
         Note that SQLite reuses freed pages but does not shrink the file, so
         this stops growth rather than reclaiming space already taken. Run
@@ -313,7 +325,9 @@ class TrajectoryStore:
 
         point_cutoff = now - point_max_age_s
         event_cutoff = now - event_max_age_s
-        removed = {"track_points": 0, "tracks": 0, "events": 0}
+        removed = {"track_points": 0, "tracks": 0, "events": 0, "clips": 0}
+        if clip_max_age_s is not None:
+            removed["clips"] = self._prune_clips(now - clip_max_age_s, Path(media_root))
         # Bound each write transaction and release the shared writer lock.
         # A full-history DELETE on Windows bind mounts can take minutes and
         # otherwise stalls every live track write for the entire sweep.
@@ -338,6 +352,43 @@ class TrajectoryStore:
                     break
                 time.sleep(0.01)  # Let waiting live writers acquire the lock.
         return removed
+
+    def _prune_clips(self, cutoff: float, media_root: Path) -> int:
+        removed = 0
+        while True:
+            with self._lock:
+                rows = (
+                    self._require_connection()
+                    .execute(
+                        "SELECT clip_id, path FROM clips WHERE requested_at < ? LIMIT 1000",
+                        (cutoff,),
+                    )
+                    .fetchall()
+                )
+            if not rows:
+                return removed
+            for row in rows:
+                self._unlink_clip(media_root, str(row["path"]))
+            clip_ids = [str(row["clip_id"]) for row in rows]
+            placeholders = ",".join("?" * len(clip_ids))
+            with self._lock, self._require_connection() as connection:
+                connection.execute(
+                    f"DELETE FROM clips WHERE clip_id IN ({placeholders})", clip_ids
+                )
+            removed += len(clip_ids)
+            if len(clip_ids) < 1000:
+                return removed
+            time.sleep(0.01)
+
+    @staticmethod
+    def _unlink_clip(media_root: Path, relative_path: str) -> None:
+        path = Path(relative_path)
+        if path.is_absolute() or ".." in path.parts:
+            return
+        try:
+            (media_root / path).unlink(missing_ok=True)
+        except OSError as error:
+            _LOGGER.warning("Could not delete clip %s: %s", path, error)
 
     def query_events(
         self, fusion_id: str, limit: int = 100, before: float | None = None

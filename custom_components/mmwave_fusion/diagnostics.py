@@ -72,5 +72,6 @@ async def async_get_config_entry_diagnostics(
             # the radar count, and by nothing else in this file.
             "point_retention_days": coordinator.point_retention_days,
             "event_retention_days": coordinator.event_retention_days,
+            "clip_retention_days": coordinator.clip_retention_days,
         },
     }

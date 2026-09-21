@@ -11,10 +11,9 @@ prune_history:
   name: Prune history
   description: >-
     Apply the retention windows now instead of waiting for the six-hourly
-    sweep. Deletes track points older than 7 days and tracks and events older
-    than 90 days; recordings are never touched. Returns how many rows went.
-    Frees pages for reuse rather than shrinking the file — follow with Vacuum
-    database for that.
+    sweep. Deletes track points, tracks, events and clip files older than the
+    configured windows. Returns how many rows went. Frees pages for reuse
+    rather than shrinking the file — follow with Vacuum database for that.
 
 reset_tracks:
   name: Reset tracks

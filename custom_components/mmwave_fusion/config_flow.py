@@ -23,13 +23,17 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    DEFAULT_CLIP_RETENTION_DAYS,
     DEFAULT_EVENT_RETENTION_DAYS,
     DEFAULT_POINT_RETENTION_DAYS,
     DOMAIN,
+    MAX_CLIP_RETENTION_DAYS,
     MAX_EVENT_RETENTION_DAYS,
     MAX_POINT_RETENTION_DAYS,
+    MIN_CLIP_RETENTION_DAYS,
     MIN_EVENT_RETENTION_DAYS,
     MIN_POINT_RETENTION_DAYS,
+    OPTION_CLIP_RETENTION_DAYS,
     OPTION_EVENT_RETENTION_DAYS,
     OPTION_POINT_RETENTION_DAYS,
 )
@@ -124,6 +128,15 @@ class MMWaveFusionOptionsFlow(OptionsFlow):
                     ): vol.All(
                         cv.positive_int,
                         vol.Range(min=MIN_EVENT_RETENTION_DAYS, max=MAX_EVENT_RETENTION_DAYS),
+                    ),
+                    vol.Required(
+                        OPTION_CLIP_RETENTION_DAYS,
+                        default=options.get(
+                            OPTION_CLIP_RETENTION_DAYS, DEFAULT_CLIP_RETENTION_DAYS
+                        ),
+                    ): vol.All(
+                        cv.positive_int,
+                        vol.Range(min=MIN_CLIP_RETENTION_DAYS, max=MAX_CLIP_RETENTION_DAYS),
                     ),
                 }
             ),

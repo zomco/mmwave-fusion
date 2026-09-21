@@ -7,30 +7,35 @@ import contextlib
 import logging
 import re
 import time
-from copy import deepcopy
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import datetime
-from math import ceil
+from math import ceil, hypot
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers import entity_registry as er
 
 from .const import (
     API_VERSION,
+    CLIP_EVENT_TYPE,
     DEFAULT_ASSOCIATION_GATE_CM,
+    DEFAULT_CLIP_RETENTION_DAYS,
+    DEFAULT_DUPLICATE_GATE_CM,
     DEFAULT_EVENT_RETENTION_DAYS,
     DEFAULT_FRAME_DEBOUNCE_S,
     DEFAULT_FUSION_ID,
+    DEFAULT_MERGE_CONFIRM_S,
     DEFAULT_MERGE_GATE_CM,
     DEFAULT_POINT_FLUSH_S,
     DEFAULT_POINT_RETENTION_DAYS,
+    DEFAULT_RANGE_MERGE_FACTOR,
     DEFAULT_RATE_HZ,
     DEFAULT_TRACK_TTL_S,
     EVENT_TYPE,
@@ -50,7 +55,7 @@ from .fusion import (
     FusedTrack,
     FusionEngine,
     Observation,
-    observations_in_room,
+    observations_inside,
     transform_point,
 )
 from .profiles import CALIBRATION_KEYS, normalize_calibration_profile, resolve_calibration_profiles
@@ -77,6 +82,7 @@ class FusionCoordinator:
         self._prune_task: asyncio.Task[None] | None = None
         self.point_retention_days: float = DEFAULT_POINT_RETENTION_DAYS
         self.event_retention_days: float = DEFAULT_EVENT_RETENTION_DAYS
+        self.clip_retention_days: float = DEFAULT_CLIP_RETENTION_DAYS
         # Set when the options change so the sleeping prune loop wakes instead
         # of sitting out the rest of its six hours.
         self._prune_now = asyncio.Event()
@@ -177,7 +183,9 @@ class FusionCoordinator:
             await system.async_stop()
         await self.hass.async_add_executor_job(self.trajectory_store.close)
 
-    def set_retention(self, point_days: float, event_days: float) -> None:
+    def set_retention(
+        self, point_days: float, event_days: float, clip_days: float | None = None
+    ) -> None:
         """Apply new retention windows and sweep on the next tick.
 
         Shortening a window is a request to delete something, and waiting up to
@@ -186,14 +194,22 @@ class FusionCoordinator:
         sweep in flight.
         """
 
-        if (point_days, event_days) == (self.point_retention_days, self.event_retention_days):
+        if clip_days is None:
+            clip_days = self.clip_retention_days
+        if (point_days, event_days, clip_days) == (
+            self.point_retention_days,
+            self.event_retention_days,
+            self.clip_retention_days,
+        ):
             return
         self.point_retention_days = point_days
         self.event_retention_days = event_days
+        self.clip_retention_days = clip_days
         _LOGGER.info(
-            "History retention set to %s day(s) of points and %s day(s) of events",
+            "History retention set to %s day(s) of points, %s day(s) of events, %s day(s) of clips",
             point_days,
             event_days,
+            clip_days,
         )
         self._prune_now.set()
 
@@ -207,13 +223,15 @@ class FusionCoordinator:
                     time.time(),
                     self.point_retention_days * 86400.0,
                     self.event_retention_days * 86400.0,
+                    self.clip_retention_days * 86400.0,
                 )
                 if any(removed.values()):
                     _LOGGER.info(
-                        "Pruned history: %s track points, %s tracks, %s events",
+                        "Pruned history: %s track points, %s tracks, %s events, %s clips",
                         removed["track_points"],
                         removed["tracks"],
                         removed["events"],
+                        removed["clips"],
                     )
             except asyncio.CancelledError:
                 raise
@@ -244,12 +262,14 @@ class FusionCoordinator:
             time.time(),
             self.point_retention_days * 86400.0,
             self.event_retention_days * 86400.0,
+            self.clip_retention_days * 86400.0,
         )
         _LOGGER.info(
-            "Pruned history on request: %s track points, %s tracks, %s events",
+            "Pruned history on request: %s track points, %s tracks, %s events, %s clips",
             removed["track_points"],
             removed["tracks"],
             removed["events"],
+            removed["clips"],
         )
         return removed
 
@@ -454,6 +474,9 @@ class FusionSystem:
             track_ttl_s=float(settings["track_ttl_s"]),
             confirm_hits=int(settings["confirm_hits"]),
             min_confirm_sources=int(settings["min_confirm_sources"]),
+            duplicate_gate_cm=float(settings["duplicate_gate_cm"]),
+            range_merge_factor=float(settings["range_merge_factor"]),
+            merge_confirm_s=float(settings["merge_confirm_s"]),
         )
         self.events = ZoneEventEngine(self.fusion_id, config["zones"])
         self.issues = RadarIssueReporter(hass, self.fusion_id)
@@ -703,6 +726,7 @@ class FusionSystem:
                     y=y,
                     speed=speed,
                     weight=float(radar["measurement_weight"]),
+                    range_cm=hypot(raw_x, raw_y),
                 )
             )
 
@@ -736,9 +760,9 @@ class FusionSystem:
         calibration = radar["calibration"]
         observations: list[Observation] = []
         for slot, target in enumerate(frame.targets):
-            x, y, _ = transform_point(
-                target.x * scale, target.y * scale, target.z * scale, calibration
-            )
+            local_x = target.x * scale
+            local_y = target.y * scale
+            x, y, _ = transform_point(local_x, local_y, target.z * scale, calibration)
             observations.append(
                 Observation(
                     radar_id=radar_id,
@@ -750,6 +774,7 @@ class FusionSystem:
                     weight=float(radar["measurement_weight"]),
                     frame_id=frame.frame_id,
                     source_timestamp=frame.source_timestamp,
+                    range_cm=hypot(local_x, local_y),
                 )
             )
         self._pending[radar_id] = observations
@@ -792,7 +817,11 @@ class FusionSystem:
             if 0 <= observation.x <= room_w and 0 <= observation.y <= room_d:
                 stats["in_room"] += 1
 
-        result = self.engine.step(observations_in_room(observations, room_w, room_d), now)
+        polygons = {
+            radar["id"]: list(radar.get("calibration", {}).get("polygon") or [])
+            for radar in self.config["radars"]
+        }
+        result = self.engine.step(observations_inside(observations, room_w, room_d, polygons), now)
         self._latest_tracks = result.tracks
         self.quality.observe(result.tracks, now)
         for track in result.started:
@@ -812,6 +841,11 @@ class FusionSystem:
         zone_events = self.events.evaluate(result.tracks, now)
         self.quality.add_zone_events(zone_events)
         trajectory_events: list[dict[str, object]] = []
+        for track_id in result.merged_track_ids:
+            self.quality.discard(track_id)
+            await self.hass.async_add_executor_job(self.storage.end_tracks, [track_id], now)
+            self._last_point_samples.pop(track_id, None)
+
         for track_id in result.ended_track_ids:
             finished = self.quality.finish(track_id, now)
             if finished is None:
@@ -950,7 +984,9 @@ class FusionSystem:
                     }
                 )
                 task = self.hass.async_create_background_task(
-                    self._record_live_clip(camera, clip, Path(filename), lookback, duration),
+                    self._record_live_clip(
+                        camera, clip, Path(filename), lookback, duration, event
+                    ),
                     f"mmwave_fusion_record_{clip_id}",
                 )
                 self._clip_tasks.add(task)
@@ -973,6 +1009,7 @@ class FusionSystem:
         filename: Path,
         lookback: int,
         duration: int,
+        event: dict[str, object],
     ) -> None:
         """Record from HA's preloaded live stream and verify that a clip exists."""
 
@@ -1006,6 +1043,20 @@ class FusionSystem:
                 clip["file_size"] = size
                 clip["error"] = None
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
+                self.hass.bus.async_fire(
+                    CLIP_EVENT_TYPE,
+                    {
+                        "fusion_id": event["fusion_id"],
+                        "event_id": event["event_id"],
+                        "event_type": event["event_type"],
+                        "zone_id": event["zone_id"],
+                        "clip_id": clip["clip_id"],
+                        "clip_path": clip["path"],
+                        "camera_entity_id": clip["camera_entity_id"],
+                        "quality_score": event.get("quality_score"),
+                        "timestamp": event["timestamp"],
+                    },
+                )
         except asyncio.CancelledError:
             clip["status"] = "failed"
             clip["updated_at"] = time.time()
@@ -1250,6 +1301,15 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         "merge_gate_cm": float(raw_fusion.get("merge_gate_cm", DEFAULT_MERGE_GATE_CM)),
         "track_ttl_s": float(raw_fusion.get("track_ttl_s", default_track_ttl)),
         "confirm_hits": max(int(raw_fusion.get("confirm_hits", 2)), 1),
+        "duplicate_gate_cm": max(
+            float(raw_fusion.get("duplicate_gate_cm", DEFAULT_DUPLICATE_GATE_CM)), 0.0
+        ),
+        "range_merge_factor": max(
+            float(raw_fusion.get("range_merge_factor", DEFAULT_RANGE_MERGE_FACTOR)), 0.0
+        ),
+        "merge_confirm_s": max(
+            float(raw_fusion.get("merge_confirm_s", DEFAULT_MERGE_CONFIRM_S)), 0.0
+        ),
         "min_confirm_sources": min(
             max(
                 int(raw_fusion.get("min_confirm_sources", 2 if len(radars) > 1 else 1)),
