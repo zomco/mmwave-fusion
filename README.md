@@ -166,7 +166,9 @@ are not read.
 4. Dynamic lookback covers as much of the track as possible, capped at
    `buffer_seconds` (max 30 s).
 5. The call uses blocking completion, then verifies the file exists and is
-   non-empty before the status becomes `ready`.
+   non-empty before the status becomes `ready`. The backend then fires
+   `mmwave_fusion_clip_ready` so automations and the card can attach the MP4
+   without delaying the original `mmwave_fusion_event`.
 
 This means no ISAPI queries, no historical RTSP playback, no repeated indexing
 against the camera. The steady-state load is one live stream per camera, and HA

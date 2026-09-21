@@ -132,6 +132,8 @@ mmwave_fusion:
 3. 只有被摄像头 `event_types` 允许的关键事件才调用 `camera.record`。
 4. 动态 lookback 尽量覆盖完整轨迹，但不超过 `buffer_seconds`（最大 30 秒）。
 5. 录像调用使用阻塞完成语义，随后检查文件存在且大小大于零，状态才变为 `ready`。
+   随后发出 `mmwave_fusion_clip_ready`，自动化和卡片可以附上 MP4，而不必拖延原来的
+   `mmwave_fusion_event`。
 
 这样就不会向摄像头发起 ISAPI 查询、历史 RTSP 回放或反复索引请求。稳态负载是每台摄像头
 一路实时流，HA 仅在出现关键轨迹时向 `/media/mmwave_fusion/<fusion_id>/...` 写入片段。
