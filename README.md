@@ -13,11 +13,13 @@ trajectories, and persists events and clips.
 
 ## Do you need this?
 
-Probably not, unless you are running more than one radar in one space.
+Probably not, unless you need stored trajectories or more than one radar in
+one space.
 
 | You have | You need |
 | --- | --- |
-| One radar in a room | Just the [card](https://github.com/zomco/mmwave-card). Stop here. |
+| One radar in a room, Occupied bits only (bathroom, desk, bed) | Just the [card](https://github.com/zomco/mmwave-card). Stop here. |
+| One 2-D radar, but lobby crossings, replay or a heatmap | This integration — fusion mode with a single radar in `radars[]`. |
 | Several radars, and you want one merged view | The card alone will do it — **in the browser**, with nothing stored. |
 | Several radars, and you want stored trajectories, zone events, camera clips | This integration. |
 
@@ -29,13 +31,22 @@ Fusion needs radars that report **2-D position**. Range-only models report
 distance without direction, so there is nothing to fuse and the card's editor
 does not offer them.
 
+### What this is not
+
+- **Not an NVR searcher.** Events save a local still and a short clip from the
+  live HA stream. They do not seek a Hikvision/Dahua timeline.
+- **Not a Xiaomi (or other 1-D presence) fusion backend.** Binary occupancy can
+  AND-gate a light; it cannot produce room-frame tracks.
+- **Not a reason to buy a Home Assistant box.** If you already run HA, add the
+  integration. Institutions without HA should not buy a server just for this.
+
 ### The three pieces
 
 | Repository | What it is | Needed? |
 | --- | --- | --- |
 | [mmwave-component](https://github.com/zomco/mmwave-component) | ESPHome firmware | Yes — the device side. |
 | [mmwave-card](https://github.com/zomco/mmwave-card) | Lovelace card (HACS: **plugin**) | Yes — the only UI. |
-| **mmwave-fusion** (this) | HA integration (HACS: **integration**) | Multi-radar only. |
+| **mmwave-fusion** (this) | HA integration (HACS: **integration**) | Public-area tracks and events; one 2-D radar is enough. |
 
 The card and this integration are released independently, so the integration
 stamps `api_version` (currently **1**) onto every push, and the card refuses to
@@ -157,7 +168,9 @@ written into event metadata and shown in the card.
 ### Recording
 
 Only `recording_source: ha_live` is supported. Camera SD cards and NVR archives
-are not read.
+are not read. By default a camera keeps stills and clips for `enter`, `dwell`
+and `traverse` (not `exit` or rejected `trajectory`). A still is written first
+so the event list can show a thumbnail before the MP4 is ready.
 
 1. An HA HLS stream is pre-warmed for each camera entity at startup.
 2. HA reuses that camera's single decode worker and keeps roughly 30 s of
@@ -292,16 +305,24 @@ includes it so Assist can say “the camera looked empty” rather than only
 
 ## Blueprints
 
-Two automation blueprints ship in
+Four automation blueprints ship in
 [`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion).
-Import either by URL from **Settings → Automations & scenes → Blueprints →
+Import by URL from **Settings → Automations & scenes → Blueprints →
 Import blueprint**.
+
+Apartment common areas (lobby, corridor, stairwell, garage) use **fusion** even
+with one 2-D radar. Indoor bathrooms, desks and beds use **single-radar Area
+Occupied** on the device — not these blueprints, and not a camera.
+
+On the card, **Replay** is “what happened at 3am”; **Heatmap** is “which stretch
+of corridor is used”. Neither names people.
 
 ### Light follows zone presence
 
 [`zone_presence_light.yaml`](blueprints/automation/mmwave_fusion/zone_presence_light.yaml)
 
-Turns a light on while a zone is occupied and off once it is empty.
+Turns a light on while a zone is occupied and off once it is empty. Apartment:
+elevator hall, corridor, landing outside a flat door.
 
 This is not the stock motion-light blueprint with a different sensor. A PIR
 reports *movement*, so every motion-light automation needs a timeout, and every
@@ -310,6 +331,13 @@ ten minutes after they leave. A fused zone reports *presence*, so there is
 nothing to guess. The grace period exists to ride out a single dropped frame,
 not to estimate how long a person might sit still — needing more than a minute
 of it means there is a calibration problem being worked around.
+
+### Notify when a zone is occupied
+
+[`zone_occupancy_notification.yaml`](blueprints/automation/mmwave_fusion/zone_occupancy_notification.yaml)
+
+Phone buzz when the hall becomes occupied. Optional night window. Presence, not
+a scored crossing.
 
 ### Notify on a scored crossing
 
@@ -322,10 +350,22 @@ the point, because a notification that fires on every reflection off a curtain
 is one people turn off. The minimum score is a second filter for rooms where
 even a clean crossing is not always worth a phone buzzing.
 
+Apartment lobby: leave **Only at night** off. Night trespass on a stairwell or
+roof door: turn it on (default 23:00–06:00) so daytime neighbours stay quiet.
+A camera on that zone is optional.
+
 The first notification is sent immediately. If a camera is configured for the
 zone, a second one attaches `/media/local/<clip_path>` when
 `mmwave_fusion_clip_ready` fires, rather than delaying the first message for
 the recording.
+
+### Notify when someone stays in a zone
+
+[`dwell_timeout_notification.yaml`](blueprints/automation/mmwave_fusion/dwell_timeout_notification.yaml)
+
+Fires on `dwell`. Set **Dwell seconds** on the zone in the card (300 for a
+five-minute garage corner or roof). The blueprint does not choose the timeout.
+Optional night window. No camera.
 
 ---
 

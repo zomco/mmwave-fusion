@@ -1,0 +1,99 @@
+blueprint:
+  name: MMWave Fusion — notify when someone stays in a zone
+  description: >-
+    Send a notification when a track has stayed inside a zone long enough
+    for the card's `dwell_s` to fire.
+
+
+    Apartment: a garage corner, roof, or stairwell where lingering is the
+    problem — not a walk-through. Draw the zone on the fusion card and set
+    **Dwell seconds** there (e.g. 300 for five minutes). This blueprint only
+    listens; it does not choose the timeout.
+
+
+    Not a bathroom product. Indoor bathrooms use single-radar Area Occupied.
+
+
+    Requires the MMWave Fusion integration. No camera is attached.
+  domain: automation
+  source_url: https://github.com/zomco/mmwave-fusion/blob/main/blueprints/automation/mmwave_fusion/dwell_timeout_notification.yaml
+  input:
+    fusion_id:
+      name: Fusion system
+      description: The `fusion_id` of the system to watch, as configured in the card.
+      default: home
+      selector:
+        text:
+    zone_id:
+      name: Zone
+      description: >-
+        The zone's id, not its display name. Leave empty to notify on dwell
+        in any zone.
+      default: ""
+      selector:
+        text:
+    notify_service:
+      name: Notify service
+      description: The notify service to call, without the `notify.` prefix.
+      default: persistent_notification
+      selector:
+        text:
+    title:
+      name: Title
+      default: Someone stayed in the zone
+      selector:
+        text:
+    night_window:
+      name: Only at night
+      description: >-
+        When on, notify only between After and Before (wraps midnight).
+      default: false
+      selector:
+        boolean:
+    after:
+      name: After
+      default: "23:00:00"
+      selector:
+        time:
+    before:
+      name: Before
+      default: "06:00:00"
+      selector:
+        time:
+
+mode: queued
+max: 10
+
+variables:
+  wanted_zone: !input zone_id
+  notify_service: !input notify_service
+  night_window: !input night_window
+  after: !input after
+  before: !input before
+
+trigger:
+  - platform: event
+    event_type: mmwave_fusion_event
+    event_data:
+      event_type: dwell
+      fusion_id: !input fusion_id
+
+condition:
+  - condition: template
+    value_template: >-
+      {{ wanted_zone | length == 0 or trigger.event.data.zone_id == wanted_zone }}
+  - condition: template
+    value_template: >-
+      {% set t = now().strftime('%H:%M:%S') %}
+      {{ not night_window
+         or (after > before and (t >= after or t < before))
+         or (after <= before and t >= after and t < before) }}
+
+action:
+  - service: "notify.{{ notify_service }}"
+    data:
+      title: !input title
+      message: >-
+        {{ trigger.event.data.zone_id }} ·
+        dwell {{ trigger.event.data.metadata.dwell_s | default(0) | int }}s ·
+        {{ trigger.event.data.timestamp | timestamp_custom('%H:%M:%S') }}

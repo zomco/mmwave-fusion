@@ -27,6 +27,7 @@ from .const import (
     CLIP_EVENT_TYPE,
     CLIP_REVIEW_EVENT_TYPE,
     DEFAULT_ASSOCIATION_GATE_CM,
+    DEFAULT_CAMERA_EVENT_TYPES,
     DEFAULT_CLIP_RETENTION_DAYS,
     DEFAULT_DUPLICATE_GATE_CM,
     DEFAULT_EVENT_RETENTION_DAYS,
@@ -47,6 +48,7 @@ from .const import (
     SIGNAL_SYSTEM_ADDED,
     SIGNAL_SYSTEM_REMOVED,
     SIGNAL_UPDATE,
+    SNAPSHOT_EVENT_TYPE,
     SPATIAL_MODELS,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -977,6 +979,7 @@ class FusionSystem:
                 "review_verdict": None,
                 "review_summary": None,
                 "review_error": None,
+                "snapshot_path": None,
             }
             try:
                 await self.hass.async_add_executor_job(
@@ -1030,6 +1033,7 @@ class FusionSystem:
                 clip["updated_at"] = time.time()
                 clip["error"] = None
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
+                await self._async_snapshot_clip(clip, filename, event)
                 await self.hass.services.async_call(
                     "camera",
                     "record",
@@ -1064,6 +1068,7 @@ class FusionSystem:
                         "camera_entity_id": clip["camera_entity_id"],
                         "quality_score": event.get("quality_score"),
                         "timestamp": event["timestamp"],
+                        "snapshot_path": clip.get("snapshot_path"),
                     },
                 )
                 review_task = self.hass.async_create_background_task(
@@ -1090,6 +1095,53 @@ class FusionSystem:
                 clip["error"],
             )
 
+    async def _async_snapshot_clip(
+        self,
+        clip: dict[str, object],
+        filename: Path,
+        event: dict[str, object],
+    ) -> None:
+        """Grab a still first so the event list can show something before the MP4."""
+
+        snapshot = filename.with_suffix(".jpg")
+        try:
+            await self.hass.services.async_call(
+                "camera",
+                "snapshot",
+                {
+                    "entity_id": str(clip["camera_entity_id"]),
+                    "filename": str(snapshot),
+                },
+                blocking=True,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Event snapshot failed for %s; the clip will still record",
+                clip["clip_id"],
+            )
+            return
+        size = await self.hass.async_add_executor_job(
+            lambda: snapshot.stat().st_size if snapshot.is_file() else 0
+        )
+        if size <= 0:
+            return
+        clip["snapshot_path"] = Path(str(clip["path"])).with_suffix(".jpg").as_posix()
+        clip["updated_at"] = time.time()
+        await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
+        self.hass.bus.async_fire(
+            SNAPSHOT_EVENT_TYPE,
+            {
+                "fusion_id": event["fusion_id"],
+                "event_id": event["event_id"],
+                "event_type": event["event_type"],
+                "zone_id": event["zone_id"],
+                "clip_id": clip["clip_id"],
+                "snapshot_path": clip["snapshot_path"],
+                "camera_entity_id": clip["camera_entity_id"],
+                "timestamp": event["timestamp"],
+            },
+        )
+
     async def _maybe_review_clip(
         self,
         clip: dict[str, object],
@@ -1109,24 +1161,25 @@ class FusionSystem:
             return
         snapshot = filename.with_suffix(".jpg")
         attachments: list[dict[str, str]] = []
-        try:
-            await self.hass.services.async_call(
-                "camera",
-                "snapshot",
-                {
-                    "entity_id": str(clip["camera_entity_id"]),
-                    "filename": str(snapshot),
-                },
-                blocking=True,
-            )
-        except Exception:
-            # A missing snapshot must not abort review; the live camera still is
-            # a usable attachment, and one failing camera.snapshot is not a
-            # fusion failure.
-            _LOGGER.exception(
-                "Clip review snapshot failed for %s; falling back to the live camera",
-                clip["clip_id"],
-            )
+        if not snapshot.is_file():
+            try:
+                await self.hass.services.async_call(
+                    "camera",
+                    "snapshot",
+                    {
+                        "entity_id": str(clip["camera_entity_id"]),
+                        "filename": str(snapshot),
+                    },
+                    blocking=True,
+                )
+            except Exception:
+                # A missing snapshot must not abort review; the live camera still is
+                # a usable attachment, and one failing camera.snapshot is not a
+                # fusion failure.
+                _LOGGER.exception(
+                    "Clip review snapshot failed for %s; falling back to the live camera",
+                    clip["clip_id"],
+                )
         if snapshot.is_file():
             relative = Path(str(clip["path"])).with_suffix(".jpg").as_posix()
             attachments.append(
@@ -1388,7 +1441,9 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 requested_source,
             )
         raw_event_types = (
-            ["traverse"] if legacy_source else list(raw_camera.get("event_types") or ["traverse"])
+            ["traverse"]
+            if legacy_source
+            else list(raw_camera.get("event_types") or list(DEFAULT_CAMERA_EVENT_TYPES))
         )
         unknown_event_types = set(raw_event_types) - allowed_event_types
         if unknown_event_types:

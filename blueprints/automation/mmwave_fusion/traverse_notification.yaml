@@ -18,6 +18,12 @@ blueprint:
     even a clean crossing is not always worth a phone buzzing.
 
 
+    Apartment: a lobby or stairwell crossing. Leave **Only at night** off for
+    any scored crossing; turn it on so daytime neighbours and couriers stay
+    quiet. A camera on that zone is optional — indoor bathrooms should use
+    single-radar Occupied instead of fusion.
+
+
     Requires the MMWave Fusion integration. The first notification is sent as
     soon as the traverse is scored. If a camera is configured for the zone, a
     second notification attaches the MP4 once `mmwave_fusion_clip_ready` fires
@@ -63,6 +69,24 @@ blueprint:
       default: Someone crossed the room
       selector:
         text:
+    night_window:
+      name: Only at night
+      description: >-
+        When on, notify only between After and Before (the window wraps
+        midnight). Off means any hour.
+      default: false
+      selector:
+        boolean:
+    after:
+      name: After
+      default: "23:00:00"
+      selector:
+        time:
+    before:
+      name: Before
+      default: "06:00:00"
+      selector:
+        time:
     clip_wait:
       name: Seconds to wait for a clip
       description: >-
@@ -88,6 +112,9 @@ variables:
   # bare `notify.` and the automation fails at the point of notifying — which
   # is the one moment nobody is watching the log.
   notify_service: !input notify_service
+  night_window: !input night_window
+  after: !input after
+  before: !input before
 
 trigger:
   - platform: event
@@ -106,6 +133,12 @@ condition:
   - condition: template
     value_template: >-
       {{ (trigger.event.data.quality_score | int(0)) >= (wanted_score | int(0)) }}
+  - condition: template
+    value_template: >-
+      {% set t = now().strftime('%H:%M:%S') %}
+      {{ not night_window
+         or (after > before and (t >= after or t < before))
+         or (after <= before and t >= after and t < before) }}
 
 action:
   - variables:

@@ -1,0 +1,85 @@
+blueprint:
+  name: MMWave Fusion — notify when a zone is occupied
+  description: >-
+    Send a notification when a fusion zone becomes occupied.
+
+
+    Apartment: elevator hall, corridor, or the landing outside a flat door —
+    "someone is in the hall" without a camera. This is presence, not a scored
+    crossing; use the traverse blueprint when you only want a complete walk
+    through a lobby.
+
+
+    Indoor bathrooms use single-radar Area Occupied, not this.
+
+
+    Needs the MMWave Fusion integration. Zone sensors are named
+    `binary_sensor.mmwave_fusion_<system>_<zone>_occupied`.
+  domain: automation
+  source_url: https://github.com/zomco/mmwave-fusion/blob/main/blueprints/automation/mmwave_fusion/zone_occupancy_notification.yaml
+  input:
+    zone_sensor:
+      name: Zone occupancy sensor
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              integration: mmwave_fusion
+    notify_service:
+      name: Notify service
+      description: The notify service to call, without the `notify.` prefix.
+      default: persistent_notification
+      selector:
+        text:
+    title:
+      name: Title
+      default: Someone is in the hall
+      selector:
+        text:
+    night_window:
+      name: Only at night
+      description: >-
+        When on, notify only between After and Before (wraps midnight).
+      default: false
+      selector:
+        boolean:
+    after:
+      name: After
+      default: "23:00:00"
+      selector:
+        time:
+    before:
+      name: Before
+      default: "06:00:00"
+      selector:
+        time:
+
+mode: single
+max_exceeded: silent
+
+variables:
+  notify_service: !input notify_service
+  night_window: !input night_window
+  after: !input after
+  before: !input before
+
+trigger:
+  - platform: state
+    entity_id: !input zone_sensor
+    to: "on"
+
+condition:
+  - condition: template
+    value_template: >-
+      {% set t = now().strftime('%H:%M:%S') %}
+      {{ not night_window
+         or (after > before and (t >= after or t < before))
+         or (after <= before and t >= after and t < before) }}
+
+action:
+  - service: "notify.{{ notify_service }}"
+    data:
+      title: !input title
+      message: >-
+        {{ trigger.to_state.name }} ·
+        {{ now().strftime('%H:%M:%S') }}

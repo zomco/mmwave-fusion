@@ -4,6 +4,10 @@ blueprint:
     Turn a light on while a fusion zone is occupied and off once it is empty.
 
 
+    Apartment: elevator hall, corridor, or the landing outside a flat door.
+    Someone waiting for the lift still counts as present — PIR would time out.
+
+
     **Why this is not the motion-light blueprint.** A PIR sensor reports
     *movement*, so every motion-light automation needs a timeout, and every
     timeout is a compromise: too short and the light dies on someone reading,
@@ -11,6 +15,9 @@ blueprint:
     reports *presence* — someone sitting perfectly still is still there — so
     there is nothing to guess. The grace period below is insurance against a
     single dropped frame, not a motion timeout.
+
+
+    Indoor bathrooms and desks use single-radar Area Occupied, not this.
 
 
     Needs the MMWave Fusion integration and at least one zone with a polygon.

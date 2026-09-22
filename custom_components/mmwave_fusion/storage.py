@@ -112,6 +112,7 @@ class TrajectoryStore:
             self._ensure_column(self._connection, "clips", "review_verdict", "TEXT")
             self._ensure_column(self._connection, "clips", "review_summary", "TEXT")
             self._ensure_column(self._connection, "clips", "review_error", "TEXT")
+            self._ensure_column(self._connection, "clips", "snapshot_path", "TEXT")
             self._connection.commit()
 
     def close(self) -> None:
@@ -265,8 +266,8 @@ class TrajectoryStore:
                 INSERT OR REPLACE INTO clips(
                     clip_id, event_id, camera_entity_id, path, requested_at, start_ts, end_ts, status,
                     provider, updated_at, completed_at, file_size, error,
-                    review_verdict, review_summary, review_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    review_verdict, review_summary, review_error, snapshot_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clip["clip_id"],
@@ -285,6 +286,7 @@ class TrajectoryStore:
                     clip.get("review_verdict"),
                     clip.get("review_summary"),
                     clip.get("review_error"),
+                    clip.get("snapshot_path"),
                 ),
             )
 
@@ -413,6 +415,7 @@ class TrajectoryStore:
         sql = """
             SELECT e.*, c.clip_id, c.camera_entity_id,
                    CASE WHEN c.status = 'ready' THEN c.path END AS clip_path,
+                   c.snapshot_path AS snapshot_path,
                    c.start_ts AS clip_start_ts, c.end_ts AS clip_end_ts, c.status AS clip_status,
                    c.provider AS clip_provider, c.file_size AS clip_file_size, c.error AS clip_error,
                    c.review_verdict, c.review_summary, c.review_error

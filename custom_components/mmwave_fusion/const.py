@@ -70,7 +70,9 @@ MAX_REPLAY_WINDOW_S = 6 * 3600
 
 EVENT_TYPE = "mmwave_fusion_event"
 CLIP_EVENT_TYPE = "mmwave_fusion_clip_ready"
+SNAPSHOT_EVENT_TYPE = "mmwave_fusion_snapshot_ready"
 CLIP_REVIEW_EVENT_TYPE = "mmwave_fusion_clip_reviewed"
+DEFAULT_CAMERA_EVENT_TYPES = ("enter", "dwell", "traverse")
 SIGNAL_UPDATE = "mmwave_fusion_update"
 
 # Fusion systems are created and destroyed at runtime through the WebSocket
