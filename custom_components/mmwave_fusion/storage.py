@@ -109,6 +109,9 @@ class TrajectoryStore:
             self._ensure_column(self._connection, "clips", "completed_at", "REAL")
             self._ensure_column(self._connection, "clips", "file_size", "INTEGER")
             self._ensure_column(self._connection, "clips", "error", "TEXT")
+            self._ensure_column(self._connection, "clips", "review_verdict", "TEXT")
+            self._ensure_column(self._connection, "clips", "review_summary", "TEXT")
+            self._ensure_column(self._connection, "clips", "review_error", "TEXT")
             self._connection.commit()
 
     def close(self) -> None:
@@ -261,8 +264,9 @@ class TrajectoryStore:
                 """
                 INSERT OR REPLACE INTO clips(
                     clip_id, event_id, camera_entity_id, path, requested_at, start_ts, end_ts, status,
-                    provider, updated_at, completed_at, file_size, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    provider, updated_at, completed_at, file_size, error,
+                    review_verdict, review_summary, review_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clip["clip_id"],
@@ -278,6 +282,9 @@ class TrajectoryStore:
                     clip.get("completed_at"),
                     clip.get("file_size"),
                     clip.get("error"),
+                    clip.get("review_verdict"),
+                    clip.get("review_summary"),
+                    clip.get("review_error"),
                 ),
             )
 
@@ -387,17 +394,28 @@ class TrajectoryStore:
             return
         try:
             (media_root / path).unlink(missing_ok=True)
+            sidecar = path.with_suffix(".jpg")
+            if sidecar != path:
+                (media_root / sidecar).unlink(missing_ok=True)
         except OSError as error:
             _LOGGER.warning("Could not delete clip %s: %s", path, error)
 
     def query_events(
-        self, fusion_id: str, limit: int = 100, before: float | None = None
+        self,
+        fusion_id: str,
+        limit: int = 100,
+        before: float | None = None,
+        since: float | None = None,
+        until: float | None = None,
+        zone_id: str | None = None,
+        event_type: str | None = None,
     ) -> list[dict[str, object]]:
         sql = """
             SELECT e.*, c.clip_id, c.camera_entity_id,
                    CASE WHEN c.status = 'ready' THEN c.path END AS clip_path,
                    c.start_ts AS clip_start_ts, c.end_ts AS clip_end_ts, c.status AS clip_status,
-                   c.provider AS clip_provider, c.file_size AS clip_file_size, c.error AS clip_error
+                   c.provider AS clip_provider, c.file_size AS clip_file_size, c.error AS clip_error,
+                   c.review_verdict, c.review_summary, c.review_error
             FROM events e
             LEFT JOIN clips c ON c.event_id = e.event_id
             WHERE e.fusion_id = ?
@@ -406,6 +424,18 @@ class TrajectoryStore:
         if before is not None:
             sql += " AND e.ts < ?"
             parameters.append(before)
+        if since is not None:
+            sql += " AND e.ts >= ?"
+            parameters.append(since)
+        if until is not None:
+            sql += " AND e.ts < ?"
+            parameters.append(until)
+        if zone_id is not None:
+            sql += " AND e.zone_id = ?"
+            parameters.append(zone_id)
+        if event_type is not None:
+            sql += " AND e.event_type = ?"
+            parameters.append(event_type)
         sql += " ORDER BY e.ts DESC LIMIT ?"
         parameters.append(min(max(limit, 1), 500))
         with self._lock:
@@ -425,6 +455,34 @@ class TrajectoryStore:
                 item["recording_decisions"] = metadata.get("recording_decisions")
             result.append(item)
         return result
+
+    def event_counts(
+        self,
+        fusion_id: str,
+        since: float,
+        until: float,
+        zone_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        sql = """
+            SELECT event_type, zone_id, COUNT(*) AS n
+            FROM events
+            WHERE fusion_id = ? AND ts >= ? AND ts < ?
+        """
+        parameters: list[object] = [fusion_id, since, until]
+        if zone_id is not None:
+            sql += " AND zone_id = ?"
+            parameters.append(zone_id)
+        sql += " GROUP BY event_type, zone_id"
+        with self._lock:
+            rows = self._require_connection().execute(sql, parameters).fetchall()
+        return [
+            {
+                "event_type": str(row["event_type"]),
+                "zone_id": str(row["zone_id"]),
+                "count": int(row["n"]),
+            }
+            for row in rows
+        ]
 
     def occupancy_grid(
         self,

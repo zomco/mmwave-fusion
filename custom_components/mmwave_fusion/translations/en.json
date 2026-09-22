@@ -32,12 +32,14 @@
         "data": {
           "point_retention_days": "Keep positions for (days)",
           "event_retention_days": "Keep events and tracks for (days)",
-          "clip_retention_days": "Keep recorded clips for (days)"
+          "clip_retention_days": "Keep recorded clips for (days)",
+          "clip_review_entity": "AI Task entity for clip review"
         },
         "data_description": {
           "point_retention_days": "The occupancy heatmap can only look back this far. Its widest view is 7 days.",
           "event_retention_days": "Must be at least as long as the position window, or positions outlive the tracks they belong to. Events that still have a recording are kept until that clip's own window expires.",
-          "clip_retention_days": "Deletes the MP4 under /media/mmwave_fusion and its database row. Independent of the event window."
+          "clip_retention_days": "Deletes the MP4 under /media/mmwave_fusion and its database row. Independent of the event window.",
+          "clip_review_entity": "Optional. After a traverse clip is ready, this AI Task entity looks at a still and stores person / pet / false_positive / uncertain. Leave empty to skip."
         }
       }
     },

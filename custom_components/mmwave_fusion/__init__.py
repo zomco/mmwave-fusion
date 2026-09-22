@@ -14,6 +14,7 @@ from .const import (
     DEFAULT_POINT_RETENTION_DAYS,
     DOMAIN,
     OPTION_CLIP_RETENTION_DAYS,
+    OPTION_CLIP_REVIEW_ENTITY,
     OPTION_EVENT_RETENTION_DAYS,
     OPTION_POINT_RETENTION_DAYS,
 )
@@ -51,6 +52,9 @@ def _apply_options(coordinator: FusionCoordinator, entry: ConfigEntry) -> None:
         float(entry.options.get(OPTION_EVENT_RETENTION_DAYS, DEFAULT_EVENT_RETENTION_DAYS)),
         float(entry.options.get(OPTION_CLIP_RETENTION_DAYS, DEFAULT_CLIP_RETENTION_DAYS)),
     )
+    coordinator.clip_review_entity = (
+        str(entry.options.get(OPTION_CLIP_REVIEW_ENTITY) or "").strip() or None
+    )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -62,6 +66,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, coordinator)
     async_register_websocket_api(hass, coordinator)
     async_register_services(hass, coordinator)
+    from .llm_api import async_register_llm_api
+
+    entry.async_on_unload(async_register_llm_api(hass))
 
     # Forwarded after async_initialize so the platforms see every system
     # restored from storage; systems created later over the WebSocket API

@@ -55,6 +55,9 @@ custom_components/mmwave_fusion/
 ├── storage.py         # SQLite schema, writes, retention
 ├── profiles.py        # Shared calibration profiles keyed by HA device_id
 ├── websocket_api.py   # Card-facing commands
+├── query.py           # Compact occupancy/event/heatmap views (no HA imports)
+├── review.py          # AI Task clip-review parsing (no HA imports)
+├── llm_api.py         # Opt-in LLM tools: occupancy, events, presence, calibration
 ├── entity.py / sensor.py / binary_sensor.py
 └── translations/
 ```

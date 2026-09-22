@@ -197,6 +197,46 @@ SQLite 会复用释放的页，但不会缩小文件，所以清理只能止住�
 
 ---
 
+## 对话查询、校准帮助、短片复核
+
+这些都是可选功能。不打开就不会跑，而且**不会认人** —— 雷达轨迹是匿名的。
+
+### 用 Assist 问房间
+
+集成会注册名为 **MMWave Fusion** 的 LLM API。在对话代理（OpenAI、Ollama、Google 等）
+的 **Control Home Assistant** 里勾选它。故意不自动并进内置 Assist API：位置历史默认关掉，
+直到你勾上。
+
+| 工具 | 回答什么 |
+| --- | --- |
+| `GetOccupancy` | 现在房间和各区域有没有人（仍然匿名） |
+| `QueryEvents` | 一段时间里的 `enter` / `exit` / `dwell` / `traverse` / `trajectory` |
+| `SummarizePresence` | 按区域的事件计数，加上最热的占用格子 |
+| `DiagnoseCalibration` | 每台雷达是否在报数、帧是否过期、点是否落在房间外 |
+
+可以问：「厨房现在有人吗？」「今天下午书桌区域几点有人进来？」「实时的点是镜像的，该查什么？」
+
+点镜像说明偏航角差 180°；点和移动方向成直角说明差 90°。二维雷达不能从平面参考点反推俯仰/横滚。
+回 mmWave 卡片的校准页重做，不要手改数字。
+
+若安装了 [MCP Server](https://www.home-assistant.io/integrations/mcp_server/)，同一套 API 在
+`/api/mcp/mmwave_fusion`。
+
+能跟该对话代理说话的人就能查占用历史。这和上面只读 WebSocket 命令是同一权衡。
+
+### 用 AI Task 复核穿越短片
+
+质量引擎判为 `traverse` 时本来就会录一小段。可选地，用一个
+[AI Task](https://www.home-assistant.io/integrations/ai_task/) 实体看同一摄像头的抓拍，
+把 `person` / `pet` / `false_positive` / `uncertain` 写回这段录像。在本集成的选项里填写
+**用于短片复核的 AI Task 实体**；留空则跳过。
+
+模型挂了也不会把录像改成失败。有结论时会再发 `mmwave_fusion_clip_reviewed`。
+`QueryEvents` 会带上复核结果，所以 Assist 可以说「摄像头看起来是空的」，而不只是
+「雷达打了一次穿越分」。
+
+---
+
 ## 蓝图
 
 仓库在 [`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion)

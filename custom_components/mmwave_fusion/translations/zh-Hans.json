@@ -32,12 +32,14 @@
         "data": {
           "point_retention_days": "位置点保留天数",
           "event_retention_days": "事件与轨迹保留天数",
-          "clip_retention_days": "录像保留天数"
+          "clip_retention_days": "录像保留天数",
+          "clip_review_entity": "用于短片复核的 AI Task 实体"
         },
         "data_description": {
           "point_retention_days": "占用热力图最多只能回看这么久，其最宽视图为 7 天。",
           "event_retention_days": "不得短于位置点保留天数，否则位置点会比它所属的轨迹活得更久。仍有录像的事件会等到该录像自己的窗口到期后再删。",
-          "clip_retention_days": "删除 /media/mmwave_fusion 下的 MP4 及其数据库行。与事件窗口相互独立。"
+          "clip_retention_days": "删除 /media/mmwave_fusion 下的 MP4 及其数据库行。与事件窗口相互独立。",
+          "clip_review_entity": "可选。穿越录像就绪后，用该 AI Task 看一张抓拍，写入 person / pet / false_positive / uncertain。留空则跳过。"
         }
       }
     },

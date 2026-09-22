@@ -25,6 +25,7 @@ from homeassistant.helpers.storage import Store
 from .const import (
     API_VERSION,
     CLIP_EVENT_TYPE,
+    CLIP_REVIEW_EVENT_TYPE,
     DEFAULT_ASSOCIATION_GATE_CM,
     DEFAULT_CLIP_RETENTION_DAYS,
     DEFAULT_DUPLICATE_GATE_CM,
@@ -38,6 +39,7 @@ from .const import (
     DEFAULT_RANGE_MERGE_FACTOR,
     DEFAULT_RATE_HZ,
     DEFAULT_TRACK_TTL_S,
+    DOMAIN,
     EVENT_TYPE,
     ISSUE_CHECK_INTERVAL_S,
     MODEL_COORDINATE_SCALE,
@@ -61,6 +63,7 @@ from .fusion import (
 from .profiles import CALIBRATION_KEYS, normalize_calibration_profile, resolve_calibration_profiles
 from .quality import TrajectoryQualityEngine
 from .repairs import RadarIssueReporter
+from .review import parse_review, review_instructions
 from .storage import TrajectoryStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,6 +86,7 @@ class FusionCoordinator:
         self.point_retention_days: float = DEFAULT_POINT_RETENTION_DAYS
         self.event_retention_days: float = DEFAULT_EVENT_RETENTION_DAYS
         self.clip_retention_days: float = DEFAULT_CLIP_RETENTION_DAYS
+        self.clip_review_entity: str | None = None
         # Set when the options change so the sleeping prune loop wakes instead
         # of sitting out the rest of its six hours.
         self._prune_now = asyncio.Event()
@@ -501,6 +505,7 @@ class FusionSystem:
         self._last_point_samples: dict[str, float] = {}
         self._last_point_flush = time.time()
         self._latest_tracks: tuple[FusedTrack, ...] = ()
+        self._ready = False
         self._remove_listener: Callable[[], None] | None = None
         self._tick_task: asyncio.Task[None] | None = None
         self._clip_tasks: set[asyncio.Task[None]] = set()
@@ -895,6 +900,7 @@ class FusionSystem:
             # events emitted above.
             "zone_occupancy": self.events.occupancy(),
         }
+        self._ready = True
         async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_{self.fusion_id}", payload)
 
     async def _record_event(self, event: dict[str, object]) -> None:
@@ -968,6 +974,9 @@ class FusionSystem:
                 "completed_at": None,
                 "file_size": None,
                 "error": None,
+                "review_verdict": None,
+                "review_summary": None,
+                "review_error": None,
             }
             try:
                 await self.hass.async_add_executor_job(
@@ -1057,6 +1066,12 @@ class FusionSystem:
                         "timestamp": event["timestamp"],
                     },
                 )
+                review_task = self.hass.async_create_background_task(
+                    self._maybe_review_clip(clip, event, filename),
+                    f"mmwave_fusion_review_{clip['clip_id']}",
+                )
+                self._clip_tasks.add(review_task)
+                review_task.add_done_callback(self._clip_tasks.discard)
         except asyncio.CancelledError:
             clip["status"] = "failed"
             clip["updated_at"] = time.time()
@@ -1074,6 +1089,115 @@ class FusionSystem:
                 clip["event_id"],
                 clip["error"],
             )
+
+    async def _maybe_review_clip(
+        self,
+        clip: dict[str, object],
+        event: dict[str, object],
+        filename: Path,
+    ) -> None:
+        """Ask an AI Task entity whether the still looks like a person.
+
+        Opt-in: no entity configured means this returns immediately. A review
+        failure must not change the clip's ready status — the recording already
+        happened, and a downed model should not look like a failed camera.
+        """
+
+        coordinator = self.hass.data.get(DOMAIN)
+        entity_id = getattr(coordinator, "clip_review_entity", None)
+        if not entity_id:
+            return
+        snapshot = filename.with_suffix(".jpg")
+        attachments: list[dict[str, str]] = []
+        try:
+            await self.hass.services.async_call(
+                "camera",
+                "snapshot",
+                {
+                    "entity_id": str(clip["camera_entity_id"]),
+                    "filename": str(snapshot),
+                },
+                blocking=True,
+            )
+        except Exception:
+            # A missing snapshot must not abort review; the live camera still is
+            # a usable attachment, and one failing camera.snapshot is not a
+            # fusion failure.
+            _LOGGER.exception(
+                "Clip review snapshot failed for %s; falling back to the live camera",
+                clip["clip_id"],
+            )
+        if snapshot.is_file():
+            relative = Path(str(clip["path"])).with_suffix(".jpg").as_posix()
+            attachments.append(
+                {
+                    "media_content_id": f"media-source://media_source/local/{relative}",
+                    "media_content_type": "image/jpeg",
+                }
+            )
+        else:
+            attachments.append(
+                {
+                    "media_content_id": f"media-source://camera/{clip['camera_entity_id']}",
+                    "media_content_type": "image/jpeg",
+                }
+            )
+        try:
+            result = await self.hass.services.async_call(
+                "ai_task",
+                "generate_data",
+                {
+                    "task_name": "mmwave clip review",
+                    "instructions": review_instructions(event),
+                    "entity_id": entity_id,
+                    "structure": {
+                        "verdict": {
+                            "description": "person, pet, false_positive, or uncertain",
+                            "required": True,
+                            "selector": {
+                                "select": {
+                                    "options": [
+                                        "person",
+                                        "pet",
+                                        "false_positive",
+                                        "uncertain",
+                                    ]
+                                }
+                            },
+                        },
+                        "summary": {
+                            "description": "One sentence. Do not name people.",
+                            "required": True,
+                            "selector": {"text": {}},
+                        },
+                    },
+                    "attachments": attachments,
+                },
+                blocking=True,
+                return_response=True,
+            )
+            parsed = parse_review(result)
+        except Exception as error:
+            # The clip is already ready. A downed AI Task entity is a review
+            # miss, not a recording failure.
+            clip["review_error"] = str(error)[-500:]
+            _LOGGER.exception("Clip review failed for %s", clip["clip_id"])
+            await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
+            return
+        clip["review_verdict"] = parsed["verdict"]
+        clip["review_summary"] = parsed["summary"]
+        clip["review_error"] = None
+        await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
+        self.hass.bus.async_fire(
+            CLIP_REVIEW_EVENT_TYPE,
+            {
+                "fusion_id": event["fusion_id"],
+                "event_id": event["event_id"],
+                "clip_id": clip["clip_id"],
+                "verdict": parsed["verdict"],
+                "summary": parsed["summary"],
+            },
+        )
 
     def radar_health(self) -> list[dict[str, object]]:
         health: list[dict[str, object]] = []
@@ -1133,6 +1257,8 @@ class FusionSystem:
             "calibration_warnings": [
                 radar["id"] for radar in self.radar_health() if radar.get("calibration_warning")
             ],
+            "ready": self._ready,
+            "zone_occupancy": self.events.occupancy(),
         }
 
 

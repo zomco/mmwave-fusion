@@ -46,6 +46,7 @@ PRUNE_INTERVAL_S = 6 * 3600
 OPTION_POINT_RETENTION_DAYS = "point_retention_days"
 OPTION_EVENT_RETENTION_DAYS = "event_retention_days"
 OPTION_CLIP_RETENTION_DAYS = "clip_retention_days"
+OPTION_CLIP_REVIEW_ENTITY = "clip_review_entity"
 
 # A day is the shortest useful window — the heatmap's default view is a day,
 # and anything less would leave it empty. The upper bounds are there to stop a
@@ -69,6 +70,7 @@ MAX_REPLAY_WINDOW_S = 6 * 3600
 
 EVENT_TYPE = "mmwave_fusion_event"
 CLIP_EVENT_TYPE = "mmwave_fusion_clip_ready"
+CLIP_REVIEW_EVENT_TYPE = "mmwave_fusion_clip_reviewed"
 SIGNAL_UPDATE = "mmwave_fusion_update"
 
 # Fusion systems are created and destroyed at runtime through the WebSocket

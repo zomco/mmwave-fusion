@@ -243,6 +243,53 @@ exactly the people it is meant to serve.
 
 ---
 
+## Conversation, calibration help, and clip review
+
+These are opt-in. They do not run until you turn them on, and they never name
+people — radar tracks are anonymous.
+
+### Ask Assist about the room
+
+The integration registers an LLM API named **MMWave Fusion**. Enable it on a
+conversation agent (OpenAI, Ollama, Google, …) under **Control Home Assistant**.
+It is not injected into the built-in Assist API on purpose: location history
+stays off until you check the box.
+
+| Tool | What it answers |
+| --- | --- |
+| `GetOccupancy` | Who is in the room and in each zone *right now* (still anonymous) |
+| `QueryEvents` | `enter` / `exit` / `dwell` / `traverse` / `trajectory` in a time window |
+| `SummarizePresence` | Event counts plus the hottest occupancy-grid cells |
+| `DiagnoseCalibration` | Per-radar health and the usual yaw mistakes |
+
+Example questions: “Is anyone in the kitchen?”, “When did someone enter the
+desk zone this afternoon?”, “The live point is mirrored — what should I check?”
+
+Mirrored motion means yaw is 180° off; motion at right angles means 90° off.
+2D radars cannot infer pitch/roll from floor points. Recalibrate from the
+mmWave card rather than inventing numbers.
+
+If the [MCP Server](https://www.home-assistant.io/integrations/mcp_server/)
+integration is installed, the same API is at `/api/mcp/mmwave_fusion`.
+
+Anyone who can talk to that conversation agent can query occupancy history.
+That is the same trade-off as the read-only WebSocket commands above.
+
+### Review a traverse clip with an AI Task
+
+A scored `traverse` already records a short clip. Optionally, an
+[AI Task](https://www.home-assistant.io/integrations/ai_task/) entity can look
+at a still from the same camera and store `person`, `pet`, `false_positive`, or
+`uncertain` on the clip. Set **AI Task entity for clip review** in this
+integration's options. Leave it empty to skip.
+
+The recording stays `ready` even if the model is down. A second bus event,
+`mmwave_fusion_clip_reviewed`, fires when a verdict lands. `QueryEvents`
+includes it so Assist can say “the camera looked empty” rather than only
+“radar scored a crossing”.
+
+---
+
 ## Blueprints
 
 Two automation blueprints ship in

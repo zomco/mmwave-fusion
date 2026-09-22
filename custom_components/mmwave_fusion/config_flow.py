@@ -34,6 +34,7 @@ from .const import (
     MIN_EVENT_RETENTION_DAYS,
     MIN_POINT_RETENTION_DAYS,
     OPTION_CLIP_RETENTION_DAYS,
+    OPTION_CLIP_REVIEW_ENTITY,
     OPTION_EVENT_RETENTION_DAYS,
     OPTION_POINT_RETENTION_DAYS,
 )
@@ -138,6 +139,10 @@ class MMWaveFusionOptionsFlow(OptionsFlow):
                         cv.positive_int,
                         vol.Range(min=MIN_CLIP_RETENTION_DAYS, max=MAX_CLIP_RETENTION_DAYS),
                     ),
+                    vol.Optional(
+                        OPTION_CLIP_REVIEW_ENTITY,
+                        default=options.get(OPTION_CLIP_REVIEW_ENTITY, ""),
+                    ): str,
                 }
             ),
         )
