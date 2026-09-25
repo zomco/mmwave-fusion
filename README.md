@@ -131,7 +131,7 @@ its own database (below) to keep the recorder from being flooded.
 the zone editor, the 3-D installation view and this backend all share it.
 
 > **This convention is implemented three times, in three repositories** — here
-> in `fusion.py::transform_point`, in the ESPHome components, and in the card's
+> in `engine/fusion.py::transform_point`, in the ESPHome components, and in the card's
 > `src/utils/transform.ts`. Changing one alone silently mirrors everyone's
 > coordinates while this repository's own tests stay green. See
 > [AGENTS.md](./AGENTS.md).
@@ -373,10 +373,9 @@ Optional night window. No camera.
 
 | Module | Responsibility |
 | --- | --- |
-| `fusion.py` | Coordinate transform, clustering, association, tracking |
-| `frames.py` | Atomic target frame decode |
-| `coordinator.py` | Per-system lifecycle and push loop |
-| `quality.py` | Trajectory scoring and recording admission |
+| `engine/` | Tracking, zone events, scoring, SQLite, clip admission. No HA imports. |
+| `coordinator.py` | HA shell: entity ingest, video sink, bus events |
+| `ha_video.py` | `camera.snapshot` / `camera.record` adapter |
 | `events.py` | Zone events, camera recording orchestration |
 | `storage.py` | SQLite schema, writes, retention |
 | `profiles.py` | Shared calibration profiles keyed by HA `device_id` |

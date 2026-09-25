@@ -9,12 +9,9 @@ import re
 import time
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import datetime
-from math import ceil, hypot
+from math import hypot
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
-
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -53,20 +50,22 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .events import ZoneEventEngine
-from .frames import parse_target_frame
-from .fusion import (
+from .engine.events import ZoneEventEngine
+from .engine.frames import parse_target_frame
+from .engine.fusion import (
     FusedTrack,
     FusionEngine,
     Observation,
     observations_inside,
-    transform_point,
 )
+from .engine.quality import TrajectoryQualityEngine
+from .engine.radar import observations_from_frame
+from .engine.recording import plan_recordings
+from .engine.storage import TrajectoryStore
+from .ha_video import HAVideoSink
 from .profiles import CALIBRATION_KEYS, normalize_calibration_profile, resolve_calibration_profiles
-from .quality import TrajectoryQualityEngine
 from .repairs import RadarIssueReporter
 from .review import parse_review, review_instructions
-from .storage import TrajectoryStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -762,28 +761,14 @@ class FusionSystem:
             return True
         self._last_signatures[radar_id] = signature
 
-        scale = float(radar["frame_coordinate_scale"])
-        timestamp = state.last_updated.timestamp()
-        calibration = radar["calibration"]
-        observations: list[Observation] = []
-        for slot, target in enumerate(frame.targets):
-            local_x = target.x * scale
-            local_y = target.y * scale
-            x, y, _ = transform_point(local_x, local_y, target.z * scale, calibration)
-            observations.append(
-                Observation(
-                    radar_id=radar_id,
-                    slot=slot,
-                    timestamp=timestamp,
-                    x=x,
-                    y=y,
-                    speed=target.speed * scale if target.speed is not None else None,
-                    weight=float(radar["measurement_weight"]),
-                    frame_id=frame.frame_id,
-                    source_timestamp=frame.source_timestamp,
-                    range_cm=hypot(local_x, local_y),
-                )
-            )
+        observations = observations_from_frame(
+            radar_id,
+            frame,
+            radar["calibration"],
+            scale=float(radar["frame_coordinate_scale"]),
+            timestamp=state.last_updated.timestamp(),
+            weight=float(radar["measurement_weight"]),
+        )
         self._pending[radar_id] = observations
         return True
 
@@ -913,93 +898,51 @@ class FusionSystem:
         decisions: list[dict[str, object]] = []
         metadata["recording_decisions"] = decisions
         event["recording_decisions"] = decisions
-
-        for camera in self.config["cameras"]:
-            entity_id = str(camera["entity_id"])
+        plans = plan_recordings(
+            event,
+            self.config["cameras"],
+            self._last_camera_recordings,
+            time.time(),
+            self.fusion_id,
+        )
+        for plan in plans:
             decision: dict[str, object] = {
-                "camera_entity_id": entity_id,
-                "status": "not_applicable",
+                "camera_entity_id": plan.camera_entity_id,
+                "status": plan.status,
             }
+            if plan.retry_after_s is not None:
+                decision["retry_after_s"] = plan.retry_after_s
             decisions.append(decision)
-            if camera["zones"] and event["zone_id"] not in camera["zones"]:
-                decision["status"] = "zone_filtered"
+            if plan.status != "scheduled" or plan.clip is None or plan.recording_key is None:
                 continue
-            if event["event_type"] not in camera["event_types"]:
-                decision["status"] = "event_type_filtered"
-                continue
-            recording_key = (
-                str(camera["entity_id"]),
-                str(event["zone_id"]),
-                str(event["event_type"]),
-            )
-            event_timestamp = float(event["timestamp"])
-            last_recording = self._last_camera_recordings.get(recording_key)
-            if last_recording is not None and event_timestamp - last_recording < int(
-                camera["cooldown_s"]
-            ):
-                decision["status"] = "cooldown"
-                decision["retry_after_s"] = round(
-                    int(camera["cooldown_s"]) - (event_timestamp - last_recording),
-                    1,
-                )
-                continue
-            base_lookback = int(camera["lookback"])
-            trajectory_start = float(metadata.get("start_ts", event_timestamp))
-            requested_lookback = max(0, ceil(event_timestamp - trajectory_start) + base_lookback)
-            lookback = min(requested_lookback, int(camera["buffer_seconds"]))
-            duration = int(camera["duration"])
-            safe_camera = re.sub(r"[^a-zA-Z0-9_-]+", "_", entity_id)
-            # Local time on purpose, hence the noqa. This names a folder someone
-            # browses under /media, and they expect their own calendar day. Under
-            # UTC, every clip after 16:00 in a UTC+8 house would file itself under
-            # tomorrow.
-            date_path = datetime.fromtimestamp(  # noqa: DTZ006
-                float(event["timestamp"])
-            ).strftime("%Y-%m-%d")
-            clip_id = uuid4().hex
-            relative_path = (
-                f"mmwave_fusion/{self.fusion_id}/{date_path}/{event['event_id']}_{safe_camera}.mp4"
-            )
-            filename = f"/media/{relative_path}"
-            now = time.time()
-            clip = {
-                "clip_id": clip_id,
-                "event_id": event["event_id"],
-                "camera_entity_id": entity_id,
-                "path": relative_path,
-                "requested_at": now,
-                "start_ts": float(event["timestamp"]) - lookback,
-                "end_ts": float(event["timestamp"]) + duration,
-                "status": "waiting",
-                "provider": "ha_live",
-                "updated_at": now,
-                "completed_at": None,
-                "file_size": None,
-                "error": None,
-                "review_verdict": None,
-                "review_summary": None,
-                "review_error": None,
-                "snapshot_path": None,
-            }
+            clip = plan.clip
+            filename = plan.absolute_path
+            lookback = plan.lookback
+            duration = plan.duration
             try:
                 await self.hass.async_add_executor_job(
                     Path(filename).parent.mkdir, 0o755, True, True
                 )
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                self._last_camera_recordings[recording_key] = event_timestamp
+                self._last_camera_recordings[plan.recording_key] = float(event["timestamp"])
                 decision.update(
                     {
                         "status": "scheduled",
-                        "clip_id": clip_id,
+                        "clip_id": clip["clip_id"],
                         "lookback_s": lookback,
-                        "buffer_truncated": requested_lookback > lookback,
+                        "buffer_truncated": plan.buffer_truncated,
                     }
+                )
+                camera = next(
+                    item
+                    for item in self.config["cameras"]
+                    if str(item["entity_id"]) == plan.camera_entity_id
                 )
                 task = self.hass.async_create_background_task(
                     self._record_live_clip(
                         camera, clip, Path(filename), lookback, duration, event
                     ),
-                    f"mmwave_fusion_record_{clip_id}",
+                    f"mmwave_fusion_record_{clip['clip_id']}",
                 )
                 self._clip_tasks.add(task)
                 task.add_done_callback(self._clip_tasks.discard)
@@ -1011,7 +954,9 @@ class FusionSystem:
                 decision["error"] = clip["error"]
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
                 _LOGGER.exception(
-                    "Unable to request recording from %s for event %s", entity_id, event["event_id"]
+                    "Unable to request recording from %s for event %s",
+                    plan.camera_entity_id,
+                    event["event_id"],
                 )
 
     async def _record_live_clip(
@@ -1026,6 +971,7 @@ class FusionSystem:
         """Record from HA's preloaded live stream and verify that a clip exists."""
 
         entity_id = str(camera["entity_id"])
+        sink = HAVideoSink(self.hass)
         lock = self._camera_recording_locks.setdefault(entity_id, asyncio.Lock())
         try:
             async with lock:
@@ -1033,18 +979,8 @@ class FusionSystem:
                 clip["updated_at"] = time.time()
                 clip["error"] = None
                 await self.hass.async_add_executor_job(self.storage.insert_clip, clip)
-                await self._async_snapshot_clip(clip, filename, event)
-                await self.hass.services.async_call(
-                    "camera",
-                    "record",
-                    {
-                        "entity_id": entity_id,
-                        "filename": str(filename),
-                        "lookback": lookback,
-                        "duration": duration,
-                    },
-                    blocking=True,
-                )
+                await self._async_snapshot_clip(clip, filename, event, sink)
+                await sink.record(entity_id, str(filename), lookback, duration)
                 size = await self.hass.async_add_executor_job(
                     lambda: filename.stat().st_size if filename.is_file() else 0
                 )
@@ -1100,20 +1036,13 @@ class FusionSystem:
         clip: dict[str, object],
         filename: Path,
         event: dict[str, object],
+        sink: HAVideoSink,
     ) -> None:
         """Grab a still first so the event list can show something before the MP4."""
 
         snapshot = filename.with_suffix(".jpg")
         try:
-            await self.hass.services.async_call(
-                "camera",
-                "snapshot",
-                {
-                    "entity_id": str(clip["camera_entity_id"]),
-                    "filename": str(snapshot),
-                },
-                blocking=True,
-            )
+            await sink.snapshot(str(clip["camera_entity_id"]), str(snapshot))
         except Exception:
             _LOGGER.exception(
                 "Event snapshot failed for %s; the clip will still record",
@@ -1163,14 +1092,8 @@ class FusionSystem:
         attachments: list[dict[str, str]] = []
         if not snapshot.is_file():
             try:
-                await self.hass.services.async_call(
-                    "camera",
-                    "snapshot",
-                    {
-                        "entity_id": str(clip["camera_entity_id"]),
-                        "filename": str(snapshot),
-                    },
-                    blocking=True,
+                await HAVideoSink(self.hass).snapshot(
+                    str(clip["camera_entity_id"]), str(snapshot)
                 )
             except Exception:
                 # A missing snapshot must not abort review; the live camera still is

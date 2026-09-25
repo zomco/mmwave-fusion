@@ -22,7 +22,7 @@ positive yaw turns toward **+X**, `room_z = radar_z − world_z`. All lengths in
 
 | Repository | File |
 | --- | --- |
-| **mmwave-fusion** (here) | `custom_components/mmwave_fusion/fusion.py` |
+| **mmwave-fusion** (here) | `custom_components/mmwave_fusion/engine/fusion.py` |
 | [mmwave-component](https://github.com/zomco/mmwave-component) | `components/{model}/{model}_transform.h` (one per model) |
 | [mmwave-card](https://github.com/zomco/mmwave-card) | `src/utils/transform.ts` |
 
@@ -44,22 +44,22 @@ repositories together.
 
 ```
 custom_components/mmwave_fusion/
-├── __init__.py        # Setup, YAML import shim
-├── config_flow.py     # Config entry creation — asks nothing on purpose
-├── const.py           # ← API_VERSION lives here
-├── coordinator.py     # Per-system lifecycle and push loop
-├── fusion.py          # ← transform_point, clustering, association, tracking
-├── frames.py          # Atomic target frame decode
-├── quality.py         # Trajectory scoring, recording admission
-├── events.py          # Zone events, camera recording orchestration
-├── storage.py         # SQLite schema, writes, retention
-├── profiles.py        # Shared calibration profiles keyed by HA device_id
-├── websocket_api.py   # Card-facing commands
-├── query.py           # Compact occupancy/event/heatmap views (no HA imports)
-├── review.py          # AI Task clip-review parsing (no HA imports)
-├── llm_api.py         # Opt-in LLM tools: occupancy, events, presence, calibration
-├── entity.py / sensor.py / binary_sensor.py
-└── translations/
+├── engine/            # No homeassistant imports. HA and a future shell share this.
+│   ├── fusion.py      # transform, clustering, association, tracking
+│   ├── frames.py      # Atomic target frame decode
+│   ├── radar.py       # Frame → room-frame Observation
+│   ├── events.py      # Zone enter/exit/dwell
+│   ├── quality.py     # Trajectory scoring
+│   ├── recording.py   # Which events keep a still/clip
+│   ├── video.py       # VideoSink protocol (not an NVR client)
+│   ├── storage.py     # SQLite
+│   ├── query.py / review.py
+├── fusion.py events.py quality.py frames.py storage.py query.py review.py
+│                      # shims so existing imports keep working
+├── ha_video.py        # VideoSink via camera.snapshot / camera.record
+├── coordinator.py     # HA lifecycle; calls engine
+├── profiles.py        # Calibration profiles keyed by HA device_id
+└── websocket_api.py / entity.py / sensor.py / binary_sensor.py / llm_api.py
 ```
 
 ---
