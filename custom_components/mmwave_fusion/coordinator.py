@@ -50,18 +50,22 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .engine.events import ZoneEventEngine
-from .engine.frames import parse_target_frame
-from .engine.fusion import (
+from ._engine_path import ensure_mmwave_engine
+
+ensure_mmwave_engine()
+
+from mmwave_engine.events import ZoneEventEngine  # noqa: E402
+from mmwave_engine.frames import parse_target_frame  # noqa: E402
+from mmwave_engine.fusion import (  # noqa: E402
     FusedTrack,
     FusionEngine,
     Observation,
     observations_inside,
 )
-from .engine.quality import TrajectoryQualityEngine
-from .engine.radar import observations_from_frame
-from .engine.recording import plan_recordings
-from .engine.storage import TrajectoryStore
+from mmwave_engine.quality import TrajectoryQualityEngine  # noqa: E402
+from mmwave_engine.radar import observations_from_frame  # noqa: E402
+from mmwave_engine.recording import plan_recordings  # noqa: E402
+from mmwave_engine.storage import TrajectoryStore  # noqa: E402
 from .ha_video import HAVideoSink
 from .profiles import CALIBRATION_KEYS, normalize_calibration_profile, resolve_calibration_profiles
 from .repairs import RadarIssueReporter

@@ -107,7 +107,7 @@ mmwave_fusion:
 `yaw = 0` 朝户型 **+Y**，正角度转向 **+X**。平面图 FOV、区域编辑器、3D 安装视图和本后端
 使用同一套约定。
 
-> **这套约定在三个仓库里各实现了一遍** —— 本仓库的 `engine/fusion.py::transform_point`、
+> **这套约定在三个仓库里各实现了一遍** —— [mmwave-engine](https://github.com/zomco/mmwave-engine) 的 `mmwave_engine/fusion.py::transform_point`、
 > ESPHome 组件、以及卡片的 `src/utils/transform.ts`。只改其中一处会静默地把所有人的坐标
 > 镜像，而本仓库自己的测试全是绿的。详见 [AGENTS.md](./AGENTS.md)。
 
@@ -303,7 +303,7 @@ SQLite 会复用释放的页，但不会缩小文件，所以清理只能止住�
 
 | 模块 | 职责 |
 | --- | --- |
-| `engine/` | 跟踪、区域事件、评分、SQLite、录像准入。不依赖 HA。 |
+| [mmwave-engine](https://github.com/zomco/mmwave-engine) | 跟踪、区域事件、评分、SQLite、录像准入。不依赖 HA。 |
 | `frames.py` | 原子目标帧解码 |
 | `coordinator.py` | 每个系统的生命周期与推送循环 |
 | `quality.py` | 轨迹评分与录像准入 |

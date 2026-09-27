@@ -1,3 +1,7 @@
-"""Compatibility shim. The implementation is engine.frames."""
+"""Compatibility shim. Implementation lives in the mmwave-engine package."""
 
-from .engine.frames import FrameTarget, TargetFrame, parse_target_frame  # noqa: F401
+from ._engine_path import ensure_mmwave_engine
+
+ensure_mmwave_engine()
+
+from mmwave_engine.frames import FrameTarget, TargetFrame, parse_target_frame  # noqa: E402,F401

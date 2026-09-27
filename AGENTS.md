@@ -22,7 +22,7 @@ positive yaw turns toward **+X**, `room_z = radar_z − world_z`. All lengths in
 
 | Repository | File |
 | --- | --- |
-| **mmwave-fusion** (here) | `custom_components/mmwave_fusion/engine/fusion.py` |
+| **mmwave-engine** | `mmwave_engine/fusion.py` in [mmwave-engine](https://github.com/zomco/mmwave-engine) |
 | [mmwave-component](https://github.com/zomco/mmwave-component) | `components/{model}/{model}_transform.h` (one per model) |
 | [mmwave-card](https://github.com/zomco/mmwave-card) | `src/utils/transform.ts` |
 
@@ -44,23 +44,17 @@ repositories together.
 
 ```
 custom_components/mmwave_fusion/
-├── engine/            # No homeassistant imports. HA and a future shell share this.
-│   ├── fusion.py      # transform, clustering, association, tracking
-│   ├── frames.py      # Atomic target frame decode
-│   ├── radar.py       # Frame → room-frame Observation
-│   ├── events.py      # Zone enter/exit/dwell
-│   ├── quality.py     # Trajectory scoring
-│   ├── recording.py   # Which events keep a still/clip
-│   ├── video.py       # VideoSink protocol (not an NVR client)
-│   ├── storage.py     # SQLite
-│   ├── query.py / review.py
+├── _engine_path.py    # Finds the mmwave-engine package
 ├── fusion.py events.py quality.py frames.py storage.py query.py review.py
-│                      # shims so existing imports keep working
+│                      # shims that import mmwave_engine
 ├── ha_video.py        # VideoSink via camera.snapshot / camera.record
-├── coordinator.py     # HA lifecycle; calls engine
+├── coordinator.py     # HA lifecycle; calls mmwave_engine
 ├── profiles.py        # Calibration profiles keyed by HA device_id
 └── websocket_api.py / entity.py / sensor.py / binary_sensor.py / llm_api.py
 ```
+
+The tracker itself is [mmwave-engine](https://github.com/zomco/mmwave-engine)
+(`mmwave_engine/`). This integration does not vendor that code.
 
 ---
 
