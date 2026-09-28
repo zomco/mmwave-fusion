@@ -58,6 +58,15 @@ The tracker itself is [mmwave-engine](https://github.com/zomco/mmwave-engine)
 
 ---
 
+## Two engines
+
+The tracker is `mmwave-engine`. It is the highest-weight video tag. Do not
+import `tracecue-engine`, and do not feed NVR region-intrusion or line-crossing
+events into `FusionEngine.step()`. Those labels have dense false positives.
+They may later rank a radar event only after a shell maps them to a zone and
+after they are cleaned. Raw NVR labels are not training truth. Human verdicts
+are. Read [mmwave-engine/AGENTS.md](https://github.com/zomco/mmwave-engine/blob/main/AGENTS.md).
+
 ## Rules
 
 ### API versioning
