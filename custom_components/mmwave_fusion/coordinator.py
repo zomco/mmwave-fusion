@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import re
 import time
@@ -243,6 +242,10 @@ class FusionCoordinator:
         """Trim history periodically so the database stops growing forever."""
 
         while True:
+            # Clear before the sweep. A wake that arrives during prune must
+            # still be visible afterwards; clearing after the sweep drops it
+            # and the shortened window waits out the full interval.
+            self._prune_now.clear()
             try:
                 removed = await self.hass.async_add_executor_job(
                     self.trajectory_store.prune,
@@ -263,10 +266,11 @@ class FusionCoordinator:
                 raise
             except Exception:
                 _LOGGER.exception("Trajectory history prune failed")
-            self._prune_now.clear()
-            with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(PRUNE_INTERVAL_S):
-                    await self._prune_now.wait()
+            # asyncio.timeout is 3.11+. lane61's system Python is 3.10.
+            try:
+                await asyncio.wait_for(self._prune_now.wait(), PRUNE_INTERVAL_S)
+            except TimeoutError:
+                pass
 
     async def async_vacuum(self) -> dict[str, int]:
         """Reclaim the disk space pruning freed. Blocking, so off the loop."""
