@@ -4,4 +4,4 @@ from ._engine_path import ensure_mmwave_engine
 
 ensure_mmwave_engine()
 
-from mmwave_engine.frames import FrameTarget, TargetFrame, parse_target_frame  # noqa: E402,F401
+from mmwave_engine.frames import FrameTarget, TargetFrame, parse_target_frame  # noqa: F401

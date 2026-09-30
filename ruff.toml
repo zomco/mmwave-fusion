@@ -32,6 +32,19 @@ ignore = [
     "TRY301",
 ]
 
+[lint.per-file-ignores]
+# These modules call ensure_mmwave_engine() before importing mmwave_engine.
+# Moving that import above the call would look up the package before the
+# search path exists.
+"custom_components/mmwave_fusion/coordinator.py" = ["E402"]
+"custom_components/mmwave_fusion/events.py" = ["E402"]
+"custom_components/mmwave_fusion/frames.py" = ["E402"]
+"custom_components/mmwave_fusion/fusion.py" = ["E402"]
+"custom_components/mmwave_fusion/quality.py" = ["E402"]
+"custom_components/mmwave_fusion/query.py" = ["E402"]
+"custom_components/mmwave_fusion/review.py" = ["E402"]
+"custom_components/mmwave_fusion/storage.py" = ["E402"]
+
 # BLE001 (blind `except Exception`) stays enabled. There is exactly one site,
 # and it carries an inline `# noqa: BLE001` explaining that one failing camera
 # must not stop radar fusion. Keeping the rule on means the next such catch has

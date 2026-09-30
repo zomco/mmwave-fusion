@@ -4,4 +4,4 @@ from ._engine_path import ensure_mmwave_engine
 
 ensure_mmwave_engine()
 
-from mmwave_engine.review import parse_review, review_instructions  # noqa: E402,F401
+from mmwave_engine.review import parse_review, review_instructions  # noqa: F401

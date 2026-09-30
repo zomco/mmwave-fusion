@@ -4,4 +4,4 @@ from ._engine_path import ensure_mmwave_engine
 
 ensure_mmwave_engine()
 
-from mmwave_engine.events import ZoneEventEngine  # noqa: E402,F401
+from mmwave_engine.events import ZoneEventEngine  # noqa: F401

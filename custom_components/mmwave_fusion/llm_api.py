@@ -304,5 +304,3 @@ class DiagnoseCalibrationTool(_FusionTool):
             "fusion_id": fusion_id,
             "radars": [diagnose_radar(item) for item in system.radar_health()],
         }
-
-

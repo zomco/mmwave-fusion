@@ -35,16 +35,23 @@ def normalize_calibration_profile(
     calibration: dict[str, float | list[object]] = {}
     for key in CALIBRATION_KEYS:
         value = raw_calibration.get(key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(float(value))
+        ):
             raise ValueError(f"calibration.{key} must be a finite number")
         calibration[key] = round(float(value), 3)
     polygon = raw_calibration.get("polygon", [])
     if not isinstance(polygon, list) or any(
-        not isinstance(point, dict) or any(
+        not isinstance(point, dict)
+        or any(
             isinstance(point.get(axis), bool)
             or not isinstance(point.get(axis), (int, float))
-            or not isfinite(float(point[axis])) for axis in ("x", "y")
-        ) for point in polygon
+            or not isfinite(float(point[axis]))
+            for axis in ("x", "y")
+        )
+        for point in polygon
     ):
         raise ValueError("calibration.polygon must contain finite x/y points")
     calibration["polygon"] = deepcopy(polygon)
@@ -79,25 +86,35 @@ def resolve_calibration_profiles(
     resolved = deepcopy(config)
     for radar in resolved["radars"]:
         device_id = radar.get("device_id")
-        profile_id = radar.get("calibration_profile_id") or (f"device:{device_id}" if device_id else None)
+        profile_id = radar.get("calibration_profile_id") or (
+            f"device:{device_id}" if device_id else None
+        )
         profile = profiles.get(profile_id) if profile_id else None
         if not profile and radar.get("calibration_profile_id"):
             # A deleted/unknown explicit binding is not permission to overwrite
             # the canonical profile with a stale inline snapshot.
             profile_id = f"device:{device_id}" if device_id else None
             profile = profiles.get(profile_id) if profile_id else None
-        if profile and (profile["device_id"] != device_id or profile["radar_model"] != radar["radar_model"]):
+        if profile and (
+            profile["device_id"] != device_id or profile["radar_model"] != radar["radar_model"]
+        ):
             raise ValueError(f"Calibration profile does not match radar {radar['id']}")
         if not profile and device_id and migrate:
             profile_id = f"device:{device_id}"
-            profile = normalize_calibration_profile({
-                "profile_id": profile_id, "device_id": device_id,
-                "radar_model": radar["radar_model"], "name": radar["id"],
-                "calibration": radar["calibration"],
-            })
+            profile = normalize_calibration_profile(
+                {
+                    "profile_id": profile_id,
+                    "device_id": device_id,
+                    "radar_model": radar["radar_model"],
+                    "name": radar["id"],
+                    "calibration": radar["calibration"],
+                }
+            )
             profiles[profile_id] = profile
         if profile:
-            radar.update(calibration=deepcopy(profile["calibration"]),
-                         calibration_profile_id=profile_id,
-                         calibration_profile_revision=profile["revision"])
+            radar.update(
+                calibration=deepcopy(profile["calibration"]),
+                calibration_profile_id=profile_id,
+                calibration_profile_revision=profile["revision"],
+            )
     return resolved

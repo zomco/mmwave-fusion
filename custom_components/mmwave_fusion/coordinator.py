@@ -12,6 +12,7 @@ from copy import deepcopy
 from math import hypot
 from pathlib import Path
 from typing import Any
+
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -19,6 +20,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 
+from ._engine_path import ensure_mmwave_engine
 from .const import (
     API_VERSION,
     CLIP_EVENT_TYPE,
@@ -50,26 +52,26 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from ._engine_path import ensure_mmwave_engine
-
-ensure_mmwave_engine()
-
-from mmwave_engine.events import ZoneEventEngine  # noqa: E402
-from mmwave_engine.frames import parse_target_frame  # noqa: E402
-from mmwave_engine.fusion import (  # noqa: E402
-    FusedTrack,
-    FusionEngine,
-    Observation,
-    observations_inside,
-)
-from mmwave_engine.quality import TrajectoryQualityEngine  # noqa: E402
-from mmwave_engine.radar import observations_from_frame  # noqa: E402
-from mmwave_engine.recording import plan_recordings  # noqa: E402
-from mmwave_engine.storage import TrajectoryStore  # noqa: E402
 from .ha_video import HAVideoSink
 from .profiles import CALIBRATION_KEYS, normalize_calibration_profile, resolve_calibration_profiles
 from .repairs import RadarIssueReporter
 from .review import parse_review, review_instructions
+
+ensure_mmwave_engine()
+
+from mmwave_engine.events import ZoneEventEngine
+from mmwave_engine.frames import parse_target_frame
+from mmwave_engine.fusion import (
+    FusedTrack,
+    FusionEngine,
+    Observation,
+    observations_inside,
+    transform_point,
+)
+from mmwave_engine.quality import TrajectoryQualityEngine
+from mmwave_engine.radar import observations_from_frame
+from mmwave_engine.recording import plan_recordings
+from mmwave_engine.storage import TrajectoryStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -153,20 +155,31 @@ class FusionCoordinator:
         previous_radars = {r["id"]: r for r in previous_config.get("radars", [])}
         for radar in normalized["radars"]:
             previous_radar = previous_radars.get(radar["id"])
-            if previous_radar and previous_radar.get("_calibration_managed") and self._radar_binding(previous_radar) == self._radar_binding(radar):
+            if (
+                previous_radar
+                and previous_radar.get("_calibration_managed")
+                and self._radar_binding(previous_radar) == self._radar_binding(radar)
+            ):
                 radar["calibration"] = deepcopy(previous_radar["calibration"])
                 radar["_calibration_managed"] = True
         normalized = resolve_calibration_profiles(normalized, profiles, migrate=True)
-        normalized["calibration_revision"] = previous_config.get("calibration_revision", config.get("calibration_revision", 0))
-        if previous_config and any(normalized.get(key) != previous_config.get(key) for key in ("room_w", "room_d", "radars")):
+        normalized["calibration_revision"] = previous_config.get(
+            "calibration_revision", config.get("calibration_revision", 0)
+        )
+        if previous_config and any(
+            normalized.get(key) != previous_config.get(key)
+            for key in ("room_w", "room_d", "radars")
+        ):
             normalized["calibration_revision"] += 1
         if self.configs.get(fusion_id) == normalized and fusion_id in self.systems:
             return self.systems[fusion_id].status()
         if persist:
-            await self.config_store.async_save({
-                "systems": {**self.configs, fusion_id: normalized},
-                "calibration_profiles": profiles,
-            })
+            await self.config_store.async_save(
+                {
+                    "systems": {**self.configs, fusion_id: normalized},
+                    "calibration_profiles": profiles,
+                }
+            )
         self.calibration_profiles = profiles
         previous = self.systems.pop(fusion_id, None)
         if previous is not None:
@@ -181,8 +194,12 @@ class FusionCoordinator:
 
     @staticmethod
     def _radar_binding(radar: dict[str, Any]) -> tuple:
-        return (radar.get("device_id"), radar["radar_model"], radar.get("frame_entity"),
-                repr(radar.get("targets")))
+        return (
+            radar.get("device_id"),
+            radar["radar_model"],
+            radar.get("frame_entity"),
+            repr(radar.get("targets")),
+        )
 
     async def async_shutdown(self) -> None:
         if self._prune_task is not None:
@@ -331,7 +348,9 @@ class FusionCoordinator:
         for fusion_id, config in list(configs.items()):
             resolved = resolve_calibration_profiles(config, profiles)
             if resolved["radars"] != self.configs[fusion_id]["radars"]:
-                resolved["calibration_revision"] = self.configs[fusion_id].get("calibration_revision", 0) + 1
+                resolved["calibration_revision"] = (
+                    self.configs[fusion_id].get("calibration_revision", 0) + 1
+                )
             configs[fusion_id] = resolved
         await self.config_store.async_save({"systems": configs, "calibration_profiles": profiles})
         previous_configs = self.configs
@@ -349,11 +368,17 @@ class FusionCoordinator:
                 # A pose change must not finalize pre-calibration tracks as
                 # traversal events or join their history onto new positions.
                 system.events = ZoneEventEngine(fusion_id, config["zones"])
-                system.quality = TrajectoryQualityEngine(fusion_id, float(config["room_w"]), float(config["room_d"]), config["quality"])
+                system.quality = TrajectoryQualityEngine(
+                    fusion_id, float(config["room_w"]), float(config["room_d"]), config["quality"]
+                )
 
     async def async_apply_calibrations(
-        self, fusion_id: str, radars: list[dict[str, Any]], expected_revision: int,
-        *, sync_devices: bool = True,
+        self,
+        fusion_id: str,
+        radars: list[dict[str, Any]],
+        expected_revision: int,
+        *,
+        sync_devices: bool = True,
     ) -> dict[str, Any]:
         async with self._calibration_lock:
             current = self.configs.get(fusion_id)
@@ -368,7 +393,9 @@ class FusionCoordinator:
             seen_devices: set[str] = set()
             for patch in radars:
                 radar = next(r for r in configs[fusion_id]["radars"] if r["id"] == patch["id"])
-                if self._radar_binding(normalize_config({"radars": [patch]})["radars"][0]) != self._radar_binding(radar):
+                if self._radar_binding(
+                    normalize_config({"radars": [patch]})["radars"][0]
+                ) != self._radar_binding(radar):
                     raise ValueError("Radar binding changed; reload before applying")
                 device_id = radar.get("device_id")
                 if device_id and device_id in seen_devices:
@@ -377,14 +404,25 @@ class FusionCoordinator:
                     seen_devices.add(device_id)
                 profile_id = radar.get("calibration_profile_id") or f"device:{device_id}"
                 previous = profiles.get(profile_id) if device_id else None
-                if device_id and patch.get("calibration_profile_revision", 0) != (previous or {}).get("revision", 0):
-                    raise ValueError("Calibration profile changed elsewhere; reload before applying")
-                normalized = normalize_calibration_profile({
-                    "profile_id": profile_id if device_id else f"fusion:{fusion_id}:{radar['id']}",
-                    "device_id": device_id or radar["id"], "radar_model": radar["radar_model"],
-                    "name": radar["id"], "calibration": patch.get("calibration"),
-                    "residual_cm": patch.get("residual_cm"),
-                }, previous)
+                if device_id and patch.get("calibration_profile_revision", 0) != (
+                    previous or {}
+                ).get("revision", 0):
+                    raise ValueError(
+                        "Calibration profile changed elsewhere; reload before applying"
+                    )
+                normalized = normalize_calibration_profile(
+                    {
+                        "profile_id": profile_id
+                        if device_id
+                        else f"fusion:{fusion_id}:{radar['id']}",
+                        "device_id": device_id or radar["id"],
+                        "radar_model": radar["radar_model"],
+                        "name": radar["id"],
+                        "calibration": patch.get("calibration"),
+                        "residual_cm": patch.get("residual_cm"),
+                    },
+                    previous,
+                )
                 radar["calibration"] = normalized["calibration"]
                 radar["_calibration_managed"] = True
                 if device_id:
@@ -397,7 +435,13 @@ class FusionCoordinator:
             results = []
             for radar in saved["radars"]:
                 failures = await self._sync_mount(radar) if sync_devices else []
-                results.append({"id": radar["id"], "status": "failed" if failures else "synced" if sync_devices else "skipped", "failures": failures})
+                results.append(
+                    {
+                        "id": radar["id"],
+                        "status": "failed" if failures else "synced" if sync_devices else "skipped",
+                        "failures": failures,
+                    }
+                )
             return {"config": saved, "devices": results}
 
     async def _sync_mount(self, radar: dict[str, Any]) -> list[str]:
@@ -409,8 +453,15 @@ class FusionCoordinator:
         failures: list[str] = []
         for key in CALIBRATION_KEYS:
             suffix = "mount_" + key.removeprefix("radar_")
-            matches = [entry.entity_id for entry in entries if entry.entity_id.startswith("number.") and (
-                entry.entity_id.endswith("_" + suffix) or str(entry.unique_id).endswith("_" + suffix))]
+            matches = [
+                entry.entity_id
+                for entry in entries
+                if entry.entity_id.startswith("number.")
+                and (
+                    entry.entity_id.endswith("_" + suffix)
+                    or str(entry.unique_id).endswith("_" + suffix)
+                )
+            ]
             if len(matches) != 1:
                 failures.append(f"{suffix}: missing or ambiguous entity")
                 continue
@@ -420,13 +471,20 @@ class FusionCoordinator:
             if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
                 failures.append(f"{entity_id}: unavailable")
                 continue
-            if value < float(state.attributes.get("min", float("-inf"))) or value > float(state.attributes.get("max", float("inf"))):
+            if value < float(state.attributes.get("min", float("-inf"))) or value > float(
+                state.attributes.get("max", float("inf"))
+            ):
                 failures.append(f"{entity_id}: outside device range")
                 continue
             try:
                 async with asyncio.timeout(10):
-                    await self.hass.services.async_call("number", "set_value", {"entity_id": entity_id, "value": value}, blocking=True)
-            except Exception as error:  # HA remains authoritative when a device is offline.
+                    await self.hass.services.async_call(
+                        "number",
+                        "set_value",
+                        {"entity_id": entity_id, "value": value},
+                        blocking=True,
+                    )
+            except Exception as error:  # noqa: BLE001  # HA remains authoritative when a device is offline.
                 failures.append(f"{entity_id}: {error}")
         return failures
 
@@ -434,12 +492,18 @@ class FusionCoordinator:
         """Remove a reusable profile without changing existing config snapshots."""
 
         async with self._calibration_lock:
-            if any(r.get("calibration_profile_id") == profile_id for c in self.configs.values() for r in c["radars"]):
+            if any(
+                r.get("calibration_profile_id") == profile_id
+                for c in self.configs.values()
+                for r in c["radars"]
+            ):
                 raise ValueError("Calibration profile is in use")
             profiles = dict(self.calibration_profiles)
             removed = profiles.pop(profile_id, None) is not None
             if removed:
-                await self.config_store.async_save({"systems": self.configs, "calibration_profiles": profiles})
+                await self.config_store.async_save(
+                    {"systems": self.configs, "calibration_profiles": profiles}
+                )
                 self.calibration_profiles = profiles
             return removed
 
@@ -798,9 +862,9 @@ class FusionSystem:
             observation
             for frame in pending.values()
             for observation in frame
-            if 0 <= now - observation.timestamp <= float(
-                self._radars[observation.radar_id]["frame_stale_after_s"]
-            )
+            if 0
+            <= now - observation.timestamp
+            <= float(self._radars[observation.radar_id]["frame_stale_after_s"])
         ]
         room_w = float(self.config["room_w"])
         room_d = float(self.config["room_d"])
@@ -943,9 +1007,7 @@ class FusionSystem:
                     if str(item["entity_id"]) == plan.camera_entity_id
                 )
                 task = self.hass.async_create_background_task(
-                    self._record_live_clip(
-                        camera, clip, Path(filename), lookback, duration, event
-                    ),
+                    self._record_live_clip(camera, clip, Path(filename), lookback, duration, event),
                     f"mmwave_fusion_record_{clip['clip_id']}",
                 )
                 self._clip_tasks.add(task)
@@ -1096,9 +1158,7 @@ class FusionSystem:
         attachments: list[dict[str, str]] = []
         if not snapshot.is_file():
             try:
-                await HAVideoSink(self.hass).snapshot(
-                    str(clip["camera_entity_id"]), str(snapshot)
-                )
+                await HAVideoSink(self.hass).snapshot(str(clip["camera_entity_id"]), str(snapshot))
             except Exception:
                 # A missing snapshot must not abort review; the live camera still is
                 # a usable attachment, and one failing camera.snapshot is not a

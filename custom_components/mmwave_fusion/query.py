@@ -4,4 +4,4 @@ from ._engine_path import ensure_mmwave_engine
 
 ensure_mmwave_engine()
 
-from mmwave_engine.query import *  # noqa: E402,F403
+from mmwave_engine.query import *  # noqa: F403

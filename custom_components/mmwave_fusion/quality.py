@@ -4,7 +4,7 @@ from ._engine_path import ensure_mmwave_engine
 
 ensure_mmwave_engine()
 
-from mmwave_engine.quality import (  # noqa: E402,F401
+from mmwave_engine.quality import (  # noqa: F401
     TrajectoryAssessment,
     TrajectoryQualityEngine,
     TrajectorySample,

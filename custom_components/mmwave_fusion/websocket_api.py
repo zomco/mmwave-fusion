@@ -332,19 +332,24 @@ async def ws_remove_calibration_profile(
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({
-    vol.Required("type"): "mmwave_fusion/apply_calibrations",
-    vol.Required("fusion_id"): str,
-    vol.Required("radars"): [dict],
-    vol.Required("expected_revision"): vol.All(int, vol.Range(min=0)),
-    vol.Optional("sync_devices", default=True): bool,
-})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "mmwave_fusion/apply_calibrations",
+        vol.Required("fusion_id"): str,
+        vol.Required("radars"): [dict],
+        vol.Required("expected_revision"): vol.All(int, vol.Range(min=0)),
+        vol.Optional("sync_devices", default=True): bool,
+    }
+)
 @websocket_api.async_response
 async def ws_apply_calibrations(hass, connection, msg) -> None:
     coordinator: FusionCoordinator = hass.data[DOMAIN]
     try:
         result = await coordinator.async_apply_calibrations(
-            msg["fusion_id"], msg["radars"], msg["expected_revision"], sync_devices=msg["sync_devices"]
+            msg["fusion_id"],
+            msg["radars"],
+            msg["expected_revision"],
+            sync_devices=msg["sync_devices"],
         )
     except ValueError as error:
         connection.send_error(msg["id"], "invalid_calibration", str(error))

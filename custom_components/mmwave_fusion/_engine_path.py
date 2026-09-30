@@ -11,9 +11,10 @@ def ensure_mmwave_engine() -> None:
         return
     try:
         import mmwave_engine  # noqa: F401
-        return
     except ImportError:
         pass
+    else:
+        return
     here = Path(__file__).resolve()
     candidates = [
         here.parents[3] / "mmwave-engine",
