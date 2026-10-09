@@ -2,340 +2,94 @@
 
 [English](./README.md)
 
-把多台毫米波雷达融合成一张统一户型图的 Home Assistant 集成：接入每台雷达的目标，变换到
-共享的户型坐标系，跨雷达关联并追踪，对生成的轨迹评分，并持久化事件和录像片段。
+把一台或多台 **2D** 毫米波雷达收成一张房间图的 Home Assistant 集成：统一坐标、轨迹、区域事件，以及可选的直播抓拍和短片。[卡片](https://github.com/zomco/mmwave-card)是唯一的界面。本集成的配置流什么都不问。
 
-> **实验性功能。** 单雷达用不上它。
+实验性。只要一个 Occupied 位的单雷达用不上它。
 
----
+## 快速使用
 
-## 你需要它吗
+1. 用 [mmwave-component](https://github.com/zomco/mmwave-component) 烧录雷达，并安装 [mmwave-card](https://github.com/zomco/mmwave-card)。先在卡片里校准。
+2. 在 HACS 把本仓库加为自定义仓库，类别选 **Integration**。安装后重启 Home Assistant。
+3. **设置 → 设备与服务 → 添加集成 → MMWave Fusion**。表单留空。
+4. 打开卡片的融合面板，加入 2D 雷达，做联合校准。不要在 YAML 里配。
 
-大概率不需要 —— 除非你要存轨迹，或同一个空间里不止一台雷达。
+编辑器不会列出 1D 雷达。它们只有距离没有方向，没有可融合的信息。
 
 | 你的情况 | 你需要 |
 | --- | --- |
-| 一个房间一台雷达，只要 Occupied（卫生间、书桌、床） | 只要[卡片](https://github.com/zomco/mmwave-card)就够了，看到这里可以停了。 |
-| 一台二维雷达，但要大堂穿越、回放或热力图 | 本集成 —— 融合模式里 `radars[]` 只填一台。 |
-| 多台雷达，想要一张合并的图 | 卡片自己就能做 —— 但融合发生在**浏览器里**，不保存任何数据。 |
-| 多台雷达，还要轨迹持久化、区域事件、摄像头录像 | 本集成。 |
+| 一台雷达，只要 Occupied（卫生间、书桌、床） | 卡片。到此为止。 |
+| 一台 2D 雷达，要穿越、回放或热力图 | 本集成，`radars[]` 里放一台。 |
+| 多台 2D 雷达，要合并视图，不保存 | 只用卡片。融合留在浏览器里。 |
+| 要保存轨迹、区域事件或摄像头短片 | 本集成。 |
 
-卡片是唯一的用户界面；本集成不自带任何前端。它完全从卡片里配置，所以它的 config flow
-什么都不问。
+这不是 NVR 检索。短片来自 Home Assistant 直播流。有人/无人不能变成轨迹。
 
-融合要求雷达能报**二维位置**。只测距的型号只有距离没有方向，没有可融合的信息，卡片的
-编辑器也不会列出它们。
+## 文档地图
 
-### 这不是什么
+| 想了解 | 看 |
+| --- | --- |
+| 烧录和第一次校准 | [新手上手指南](https://github.com/zomco/mmwave-component/blob/main/GETTING-STARTED_CN.md) |
+| 卡片配置和 YAML | [mmwave-card DIY](https://github.com/zomco/mmwave-card/blob/main/DIY_CN.md) |
+| 追踪、区域、评分（不依赖 Home Assistant） | [mmwave-engine](https://github.com/zomco/mmwave-engine) |
+| 灯光、占用、穿越、停留自动化 | [`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion) |
+| 坐标约定，以及不能单独改的地方 | [AGENTS.md](./AGENTS.md) |
+| 测试 | [mmwave-workspace](https://github.com/zomco/mmwave-workspace) 的 `tests/unit` |
 
-- **不是 NVR 检索器。** 事件会从 HA 直播流在本地存一张抓拍和一段短片，不会去海康/大华
-  时间轴上 seek。
-- **不是小米（或其他一维存在）融合后端。** 有人/无人可以跟灯做与门，不能出户型轨迹。
-- **不是买一台 Home Assistant 的理由。** 已经有 HA 就加集成。机构不要为这个单独买服务器。
+在 **设置 → 自动化与场景 → 蓝图** 里按 URL 导入。卫生间、书桌、床的室内存在检测用设备上的 Area Occupied，不用这些蓝图。
 
-### 三个组成部分
+## 它暴露什么
 
-| 仓库 | 是什么 | 要装吗 |
-| --- | --- | --- |
-| [mmwave-component](https://github.com/zomco/mmwave-component) | ESPHome 固件 | 要 —— 设备端。 |
-| [mmwave-card](https://github.com/zomco/mmwave-card) | Lovelace 卡片（HACS 类别：**plugin**） | 要 —— 唯一的界面。 |
-| **mmwave-fusion**（本仓库） | HA 集成（HACS 类别：**integration**） | 公区轨迹/事件才需要；一台二维雷达也可以。 |
-
-卡片和本集成独立发版，因此集成会在每次推送里带上 `api_version`（当前为 **1**），卡片
-发现后端版本低于所需时会直接拒绝运行并在界面提示，而不是半残地跑。
-
----
-
-## 安装
-
-### 通过 HACS
-
-把本仓库添加为自定义仓库，类别选 **Integration**，安装后重启 Home Assistant。
-
-### 然后添加集成
-
-本集成带 config flow，所以文件就位到 `config/custom_components/mmwave_fusion/` 之后，
-从 **设置 → 设备与服务 → 添加集成 → MMWave Fusion** 添加即可。
-
-没有任何需要填写的内容 —— 雷达、区域、摄像头全部从卡片里配置。
-
-已有的 YAML 配置仍然可用。残留的
-
-```yaml
-mmwave_fusion:
-```
-
-配置块会触发一次性导入并创建 config entry，之后这个块就可以删掉了。
-
-### 最后从卡片里配置
-
-打开卡片的融合面板，添加雷达，执行联合标定。这里没有任何东西需要写 YAML。
-
----
-
-## 它暴露什么实体
-
-每个融合系统对应一个设备，下挂：
+每个融合系统一个设备：
 
 | 实体 | 类型 | 说明 |
 | --- | --- | --- |
-| `sensor.mmwave_fusion_<id>_target_count` | sensor | 融合后的轨迹数。属性：`online_radars`、`radar_count`、`multi_source_targets`、`calibration_warnings` |
-| `binary_sensor.mmwave_fusion_<id>_occupied` | binary_sensor | `occupancy` 设备类别 |
+| `sensor.mmwave_fusion_<id>_target_count` | sensor | 融合轨迹数 |
+| `binary_sensor.mmwave_fusion_<id>_occupied` | binary_sensor | 占用 |
 
-在第一帧到达之前两者都报 `unavailable`，而不是替一个还没产出任何数据的系统断言"房间没人"。
+第一帧到来之前，两者都是 `unavailable`。只有这两个进 Recorder。轨迹写到 `config/.storage/mmwave_fusion.sqlite`。
 
-`multi_source_targets` 统计被两台及以上雷达同时看到的轨迹 —— 也就是融合真正起了作用的
-那些，区别于单台雷达自己的检测结果。
-
-只有这两个汇总实体会进 HA Recorder。轨迹数据写入独立数据库（见下文），避免把 recorder
-冲垮。
-
----
-
-## 工作原理
-
-1. 后端订阅每台雷达的原子目标帧；没有原子帧的旧设备仍可通过拆分的 X/Y 实体接入。
-2. 每台雷达的坐标按其安装位置和 yaw/pitch/roll 变换到统一的户型坐标系。
-3. 不同雷达的近邻观测先聚类，再由全局最小成本分配加 alpha-beta tracker 维持 `track_id`。
-   同一雷达叠在一起的槽位会先合并；紧贴已有轨迹的未匹配观测不会新开身份；两条已确认轨迹在
-   `merge_gate_cm` 内持续 `merge_confirm_s` 后并入较早的 `track_id`。
-4. `track_ttl_s` 允许短时丢帧后继续同一条轨迹；`confirm_hits` 拦截一次性误报。
-5. 轨迹、事件和雷达校准健康信息通过 `mmwave_fusion/subscribe` 推送给卡片。
-
-### 坐标约定
-
-`yaw = 0` 朝户型 **+Y**，正角度转向 **+X**。平面图 FOV、区域编辑器、3D 安装视图和本后端
-使用同一套约定。
-
-> **这套约定在三个仓库里各实现了一遍** —— [mmwave-engine](https://github.com/zomco/mmwave-engine) 的 `mmwave_engine/fusion.py::transform_point`、
-> ESPHome 组件、以及卡片的 `src/utils/transform.ts`。只改其中一处会静默地把所有人的坐标
-> 镜像，而本仓库自己的测试全是绿的。详见 [AGENTS.md](./AGENTS.md)。
-
-### 校准诊断
-
-后端统计每台雷达变换后落入户型矩形的观测比例。累计至少 100 个观测、且户型内比例低于 20%
-时，卡片会显示安装校准警告。这个诊断能发现 yaw 符号搞反、安装点填错或者量纲配置错误。
-
----
-
-## 轨迹质量与录像准入
-
-区域仍然产生 `enter`、`exit` 和 `dwell` 原始事件。轨迹结束时，质量引擎还会额外产生：
-
-- **`traverse`** —— 满足硬性条件且总分达到阈值的关键轨迹，可以触发录像。
-- **`trajectory`** —— 未达准入条件的轨迹，只保存诊断结果，不触发录像。
-
-评分满分 100，综合：是否形成完整的进入/离开拓扑、有效观测占比与最大观测间隔、位移与
-路径效率、最大位置跳变、位于户型范围内的观测占比、参与观测的雷达数量、以及轨迹持续时间。
-
-短促误报、位移不足、断续观测、大幅跳变、主要位于户型外的轨迹会被拒绝。拒绝原因、分项
-得分、指标和每台摄像头的录像决策都写入事件 metadata 并显示在卡片中。
-
-### 录像
-
-只支持 `recording_source: ha_live`，不读取摄像头 SD 卡或 NVR 的历史录像。默认对
-`enter`、`dwell`、`traverse` 留抓拍和短片（不含 `exit` 和被拒绝的 `trajectory`）。
-先写抓拍，事件列表可以在 MP4 就绪前显示缩略图。
-
-1. 融合系统启动时为每个 camera 实体预热一路 HA HLS 流。
-2. HA 复用该摄像头的单个解码 worker，并在内存中保留约 30 秒分片。
-3. 只有被摄像头 `event_types` 允许的关键事件才调用 `camera.record`。
-4. 动态 lookback 尽量覆盖完整轨迹，但不超过 `buffer_seconds`（最大 30 秒）。
-5. 录像调用使用阻塞完成语义，随后检查文件存在且大小大于零，状态才变为 `ready`。
-   随后发出 `mmwave_fusion_clip_ready`，自动化和卡片可以附上 MP4，而不必拖延原来的
-   `mmwave_fusion_event`。
-
-这样就不会向摄像头发起 ISAPI 查询、历史 RTSP 回放或反复索引请求。稳态负载是每台摄像头
-一路实时流，HA 仅在出现关键轨迹时向 `/media/mmwave_fusion/<fusion_id>/...` 写入片段。
-
-`cooldown_s` 限制同一摄像头、区域和事件类型的最小录像间隔。事件查询会明确返回
-`waiting`、`extracting`、`ready` 或 `failed`，失败信息会显示在卡片中。
-
----
-
-## 历史数据与保留策略
-
-融合轨迹、轨迹点、区域事件和录像片段写入
-`config/.storage/mmwave_fusion.sqlite`。
-
-`track_points` 按融合频率写入，是数据库的主要体积来源。在开发实例上，5.4 天内达到 166 万行
-276 MB，约每天 51 MB。因此每 6 小时执行一次保留清理：
-
-| 数据 | 保留时长 |
+| 数据 | 保留 |
 | --- | --- |
 | `track_points` | 7 天 |
 | `tracks`、`events` | 90 天 |
-| `clips`（`/media/mmwave_fusion` 下的 MP4 及其数据库行） | 30 天 |
+| `/media/mmwave_fusion` 下的短片 | 30 天 |
 
-仍有录像行的事件会被保留，以免文件变成孤儿。录像窗口到期后文件被删除，若该事件也已
-超过事件窗口，会在同一轮清理中一并去掉。三个窗口都可在集成选项里设置。
+SQLite 不会自行缩小文件。要收回空间，先停 Home Assistant，再对数据库执行 `VACUUM`。
 
-写入频率由 `quality.persist_interval_s` 限制，把默认 10 Hz 的融合频率降到落盘最多 2 Hz，
-并且只保存有实际雷达观测支撑的轨迹点。
+改配置的 WebSocket 命令仅管理员可用。`subscribe`、`query_events`、`query_track` 不是，因此任何 Home Assistant 用户都能看到实时位置和已存轨迹。若要收紧，在 `websocket_api.py` 里给这三条加上 `@websocket_api.require_admin`。非管理员会失去实时视图。
 
-SQLite 会复用释放的页，但不会缩小文件，所以清理只能止住增长，不能回收已分配的空间。
-要回收就停一次 Home Assistant，对数据库执行 `VACUUM`。
+## 雷达型号
 
----
+**1D 雷达不能使用本集成。** **2D 雷达可以使用项目的全部功能**，包括本集成。R60ABD1 同时上报高度，列在 2D 里是因为它可以参与融合。
 
-## WebSocket API 与权限
+数字和进度与 [mmwave-component](https://github.com/zomco/mmwave-component/blob/main/README_CN.md) 一致。`—` 表示说明书没有给出。标了「精度」的不是距离门宽度。LD2410 在 0.20 m 分辨率下最远 1.6 m。LD2451 按整米上报。LD2450、LD2454 的距离分辨率在每帧目标里。LD2454 性能表写 8 m，安装章节写跟踪 6 m。
 
-卡片通过以下命令与本集成通信：
+### 1D 雷达
 
-| 命令 | 需要管理员 |
-| --- | --- |
-| `mmwave_fusion/configure` | 是 |
-| `mmwave_fusion/get_config` | 是 |
-| `mmwave_fusion/remove_config` | 是 |
-| `mmwave_fusion/list_calibration_profiles` | 是 |
-| `mmwave_fusion/upsert_calibration_profile` | 是 |
-| `mmwave_fusion/remove_calibration_profile` | 是 |
-| `mmwave_fusion/subscribe` | **否** |
-| `mmwave_fusion/query_events` | **否** |
-| `mmwave_fusion/query_track` | **否** |
+| 型号 | 检测距离 | 距离分辨率 | 开发进度 |
+| --- | --- | --- | --- |
+| LD2410 | 6 m | 0.75 m / 0.20 m | 开发中 |
+| LD2410B | 6 m | 0.75 m（协议亦可设 0.20 m） | 测试中 |
+| LD2410C | 6 m | 0.75 m（协议亦可设 0.20 m） | 测试中 |
+| LD2411 | 2 m（手势 1 m） | — | 开发中 |
+| LD2411S | 6 m（微动 3.5 m） | ±5 cm / ±5%（精度） | 开发中 |
+| LD2412 | 9 m | 0.75 m | 开发中 |
+| LD2420 | 8 m（微动 6 m） | 0.70 m | 开发中 |
+| LD2450A | 2 m | 0.2 m（感知精度） | 开发中 |
+| LD6002 | 1.5 m（呼吸心率） | — | 开发中 |
+| RD-03E | 6 m（微动 3.5 m） | ±5 cm / ±5%（精度） | 开发中 |
 
-所有会修改配置的命令都限管理员。三个只读命令刻意不限，这样非管理员家庭成员也能打开
-面板看自己家。
+### 2D 雷达
 
-**但要清楚这意味着什么。** 任何 Home Assistant 用户 —— 包括受限账号或访客账号 —— 都能
-订阅居住者的实时位置，并查询任意融合系统的完整历史轨迹。如果这对你家不合适，在
-`websocket_api.py` 里给这三个命令加上 `@websocket_api.require_admin`；代价是非管理员将
-失去实时视图和事件列表。
-
-这是一个有意为之的默认值，不是疏漏。之所以写在这里而不是悄悄改掉，是因为收紧它恰恰会
-降低那些最需要它的人的使用体验。
-
----
-
-## 对话查询、校准帮助、短片复核
-
-这些都是可选功能。不打开就不会跑，而且**不会认人** —— 雷达轨迹是匿名的。
-
-### 用 Assist 问房间
-
-集成会注册名为 **MMWave Fusion** 的 LLM API。在对话代理（OpenAI、Ollama、Google 等）
-的 **Control Home Assistant** 里勾选它。故意不自动并进内置 Assist API：位置历史默认关掉，
-直到你勾上。
-
-| 工具 | 回答什么 |
-| --- | --- |
-| `GetOccupancy` | 现在房间和各区域有没有人（仍然匿名） |
-| `QueryEvents` | 一段时间里的 `enter` / `exit` / `dwell` / `traverse` / `trajectory` |
-| `SummarizePresence` | 按区域的事件计数，加上最热的占用格子 |
-| `DiagnoseCalibration` | 每台雷达是否在报数、帧是否过期、点是否落在房间外 |
-
-可以问：「厨房现在有人吗？」「今天下午书桌区域几点有人进来？」「实时的点是镜像的，该查什么？」
-
-点镜像说明偏航角差 180°；点和移动方向成直角说明差 90°。二维雷达不能从平面参考点反推俯仰/横滚。
-回 mmWave 卡片的校准页重做，不要手改数字。
-
-若安装了 [MCP Server](https://www.home-assistant.io/integrations/mcp_server/)，同一套 API 在
-`/api/mcp/mmwave_fusion`。
-
-能跟该对话代理说话的人就能查占用历史。这和上面只读 WebSocket 命令是同一权衡。
-
-### 用 AI Task 复核穿越短片
-
-质量引擎判为 `traverse` 时本来就会录一小段。可选地，用一个
-[AI Task](https://www.home-assistant.io/integrations/ai_task/) 实体看同一摄像头的抓拍，
-把 `person` / `pet` / `false_positive` / `uncertain` 写回这段录像。在本集成的选项里填写
-**用于短片复核的 AI Task 实体**；留空则跳过。
-
-模型挂了也不会把录像改成失败。有结论时会再发 `mmwave_fusion_clip_reviewed`。
-`QueryEvents` 会带上复核结果，所以 Assist 可以说「摄像头看起来是空的」，而不只是
-「雷达打了一次穿越分」。
-
----
-
-## 蓝图
-
-仓库在 [`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion)
-提供四个自动化蓝图。在**设置 → 自动化与场景 → 蓝图 → 导入蓝图**中按 URL 导入。
-
-公寓公共区（大堂、楼道、楼梯间、地库）用**融合**，即使只有一台二维雷达。户内卫生间、
-书桌、床用设备上的**单雷达 Area Occupied**——不要用这些蓝图，也不要装摄像头。
-
-卡片上的 **回放** 是「凌晨三点发生过什么」；**热力图** 是「哪段走廊常走人」。都不认人。
-
-### 灯随区域有人而亮
-
-[`zone_presence_light.yaml`](blueprints/automation/mmwave_fusion/zone_presence_light.yaml)
-
-区域有人时开灯，区域空了之后关灯。公寓：电梯厅、楼道、入户门外的平台。
-
-这不是把官方的移动感应蓝图换个传感器。PIR 只能报告**移动**，所以每个移动灯光
-自动化都需要一个超时，而每个超时都是妥协：太短则有人看书时灯灭，太长则人走后
-还亮十分钟。融合区域报告的是**存在**，因此没有需要猜的东西。宽限期的作用是扛过
-偶尔丢的一帧，而不是估计一个人能坐多久不动——需要超过一分钟，说明是在绕开一个
-标定问题而不是解决它。
-
-### 区域有人时通知
-
-[`zone_occupancy_notification.yaml`](blueprints/automation/mmwave_fusion/zone_occupancy_notification.yaml)
-
-楼道里有人时手机响一下。可加夜间窗口。这是存在，不是打过分的穿越。
-
-### 有效穿越时通知
-
-[`traverse_notification.yaml`](blueprints/automation/mmwave_fusion/traverse_notification.yaml)
-
-在 `traverse` 事件上触发：一条完整且观测充分的穿越路径，由上文的质量引擎判定。
-未通过检查的轨迹会以 `trajectory` 事件发出并附带原因，**不会**匹配本蓝图——这
-正是关键，因为一个被窗帘反射就响的通知，最终会被人关掉。最低分数是在此之上的
-第二层过滤，适用于那些"即使是干净的穿越也未必值得手机响一下"的房间。
-
-公寓大堂：关掉「仅夜间」。楼梯间或天台门的夜间越界：打开（默认 23:00–06:00），
-白天邻居经过不响。摄像头可选。
-
-第一条通知立刻发出。若该区域配置了摄像头，第二条会在 `mmwave_fusion_clip_ready`
-到达时附上 `/media/local/<clip_path>`，而不是把第一条消息拖到录像写完。
-
-### 区域久留时通知
-
-[`dwell_timeout_notification.yaml`](blueprints/automation/mmwave_fusion/dwell_timeout_notification.yaml)
-
-在 `dwell` 上触发。超时是卡片上该区域的**驻留秒数**（地库角落、天台用 300 表示五分钟）。
-蓝图不决定多久算久留。可加夜间窗口。不附带录像。
-
----
-
-## 开发
-
-| 模块 | 职责 |
-| --- | --- |
-| [mmwave-engine](https://github.com/zomco/mmwave-engine) | 跟踪、区域事件、评分、SQLite、录像准入。不依赖 HA。 |
-| `frames.py` | 原子目标帧解码 |
-| `coordinator.py` | 每个系统的生命周期与推送循环 |
-| `quality.py` | 轨迹评分与录像准入 |
-| `events.py` | 区域事件、摄像头录像编排 |
-| `storage.py` | SQLite 表结构、写入、保留清理 |
-| `profiles.py` | 按 HA `device_id` 标识的共享校准档案 |
-| `websocket_api.py` | 上表中的命令 |
-| `config_flow.py` | 创建 config entry（什么都不问） |
-
-单元测试位于开发工作区
-[mmwave-workspace](https://github.com/zomco/mmwave-workspace)，那里把本仓库连同卡片和
-ESPHome 组件一起作为子模块管理：
-
-```bash
-python -m unittest discover -s tests/unit
-```
-
-测试用桩替代 Home Assistant 而不是真的导入它，因此无需安装 Home Assistant 即可运行。
-
----
+| 型号 | 检测距离 | 角度范围 | 距离分辨率 | 开发进度 |
+| --- | --- | --- | --- | --- |
+| LD2450 | 6 m | 方位 ±60°，俯仰 ±35° | 随帧上报 | 开发中 |
+| LD2451 | 100 m | 水平 ±15°，垂直 ±7° | 1 m | 测试中 |
+| LD2452 | 6 m | 方位 ±60°，俯仰 ±30° | 0.72 m | 测试中 |
+| LD2453 | 6 m | 方位 ±40°，俯仰 ±30° | 0.72 m | 开发中 |
+| LD2454 | 8 m | 方位 ±60°，俯仰 ±30° | 随帧上报 | 测试中 |
+| R60ABD1 | 2.5 m（呼吸心率 1.5 m） | ±20° | — | 已完成 |
 
 ## 许可证
 
 MIT
-
-### 校准一致性（API v4）
-
-运行时校准以事务方式保存，并通过设备校准档案在各卡片间共享。版本检查拒绝过期写入，普通卡片配置不会覆盖已管理的安装参数。应用新安装参数时清除不兼容的跟踪历史，不重启摄像头录制。
-
-### 运行时积压处理
-
-两次融合计算之间，每台雷达仅保留最新的完整帧（包括无人空帧）。数据库写入变慢时，
-旧帧不会积压成同时存在的大量目标。跟踪器还会合并同一雷达槽位的历史读数，并在分配
-匹配矩阵之前移除过期观测和轨迹，避免延迟计算长期占用 Home Assistant 主线程。
-历史清理使用时间索引，每个事务最多删除 1,000 条记录，批间释放写锁，避免清理期间阻塞实时轨迹写入。

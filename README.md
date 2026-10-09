@@ -2,411 +2,94 @@
 
 [中文文档](./README_CN.md)
 
-Home Assistant integration that fuses several mmWave radars into one room-frame
-picture: it ingests each radar's targets, transforms them into a shared floor
-plan, associates and tracks them across radars, scores the resulting
-trajectories, and persists events and clips.
+Home Assistant integration that turns one or more **2D** mmWave radars into one room-frame picture: shared coordinates, tracks, zone events, and optional stills and short clips from a live camera stream. The [card](https://github.com/zomco/mmwave-card) is the only UI. This integration asks for nothing in its config flow.
 
-> **Experimental.** Single-radar setups do not need this.
+Experimental. A single radar that only needs an Occupied bit does not need this.
 
----
+## Quick start
 
-## Do you need this?
+1. Flash the radar with [mmwave-component](https://github.com/zomco/mmwave-component) and install [mmwave-card](https://github.com/zomco/mmwave-card). Calibrate there first.
+2. In HACS, add this repository as a custom repository, category **Integration**. Install it and restart Home Assistant.
+3. **Settings → Devices & services → Add integration → MMWave Fusion**. Leave the form empty.
+4. Open the card's fusion panel, add 2D radars, and run joint calibration. Do not configure this in YAML.
 
-Probably not, unless you need stored trajectories or more than one radar in
-one space.
+1D radars are not offered. They report distance without direction, so there is nothing to fuse.
 
 | You have | You need |
 | --- | --- |
-| One radar in a room, Occupied bits only (bathroom, desk, bed) | Just the [card](https://github.com/zomco/mmwave-card). Stop here. |
-| One 2-D radar, but lobby crossings, replay or a heatmap | This integration — fusion mode with a single radar in `radars[]`. |
-| Several radars, and you want one merged view | The card alone will do it — **in the browser**, with nothing stored. |
-| Several radars, and you want stored trajectories, zone events, camera clips | This integration. |
+| One radar, Occupied only (bathroom, desk, bed) | The card. Stop here. |
+| One 2D radar, and you want crossings, replay, or a heatmap | This integration, with one radar in `radars[]`. |
+| Several 2D radars, a merged view, nothing stored | The card alone. Fusion stays in the browser. |
+| Stored tracks, zone events, or camera clips | This integration. |
 
-The card is the only user interface; this integration ships no frontend of its
-own. It is configured entirely from the card, which is why its config flow asks
-for nothing.
+This is not an NVR search. Clips come from the live Home Assistant stream. A presence bit cannot produce a track.
 
-Fusion needs radars that report **2-D position**. Range-only models report
-distance without direction, so there is nothing to fuse and the card's editor
-does not offer them.
+## Documentation map
 
-### What this is not
+| If you want | Read |
+| --- | --- |
+| Flash and first calibration | [Getting Started](https://github.com/zomco/mmwave-component/blob/main/GETTING-STARTED.md) |
+| Card setup and YAML | [mmwave-card DIY](https://github.com/zomco/mmwave-card/blob/main/DIY.md) |
+| Tracker, zones, scoring (no Home Assistant) | [mmwave-engine](https://github.com/zomco/mmwave-engine) |
+| Light, occupancy, crossing, and dwell automations | [`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion) |
+| Coordinate convention and what not to change | [AGENTS.md](./AGENTS.md) |
+| Tests | [mmwave-workspace](https://github.com/zomco/mmwave-workspace) `tests/unit` |
 
-- **Not an NVR searcher.** Events save a local still and a short clip from the
-  live HA stream. They do not seek a Hikvision/Dahua timeline.
-- **Not a Xiaomi (or other 1-D presence) fusion backend.** Binary occupancy can
-  AND-gate a light; it cannot produce room-frame tracks.
-- **Not a reason to buy a Home Assistant box.** If you already run HA, add the
-  integration. Institutions without HA should not buy a server just for this.
-
-### The three pieces
-
-| Repository | What it is | Needed? |
-| --- | --- | --- |
-| [mmwave-component](https://github.com/zomco/mmwave-component) | ESPHome firmware | Yes — the device side. |
-| [mmwave-card](https://github.com/zomco/mmwave-card) | Lovelace card (HACS: **plugin**) | Yes — the only UI. |
-| **mmwave-fusion** (this) | HA integration (HACS: **integration**) | Public-area tracks and events; one 2-D radar is enough. |
-
-The card and this integration are released independently, so the integration
-stamps `api_version` (currently **1**) onto every push, and the card refuses to
-run against a backend older than it needs — saying so in the UI rather than
-half-working.
-
----
-
-## Installation
-
-### Via HACS
-
-Add this repository as a custom repository under the **Integration** category,
-then install and restart Home Assistant.
-
-### Then add the integration
-
-The integration ships a config flow, so once the files are in
-`config/custom_components/mmwave_fusion/` it is added from
-**Settings → Devices & services → Add integration → MMWave Fusion**.
-
-There is nothing to fill in — radars, zones and cameras are all configured from
-the card.
-
-An existing YAML setup keeps working. A leftover
-
-```yaml
-mmwave_fusion:
-```
-
-block triggers a one-shot import that creates the config entry; the block can
-be removed afterwards.
-
-### Then configure it from the card
-
-Open the card's fusion panel, add your radars, and run the joint calibration.
-Nothing here is configured in YAML.
-
----
+Import a blueprint from **Settings → Automations & scenes → Blueprints**. Indoor bathroom, desk, and bed presence stays on the device's Area Occupied entity, not these blueprints.
 
 ## What it exposes
 
-Per fusion system, grouped under one device:
+One device per fusion system:
 
 | Entity | Type | Notes |
 | --- | --- | --- |
-| `sensor.mmwave_fusion_<id>_target_count` | sensor | Fused track count. Attributes: `online_radars`, `radar_count`, `multi_source_targets`, `calibration_warnings` |
-| `binary_sensor.mmwave_fusion_<id>_occupied` | binary_sensor | `occupancy` device class |
+| `sensor.mmwave_fusion_<id>_target_count` | sensor | Fused track count |
+| `binary_sensor.mmwave_fusion_<id>_occupied` | binary_sensor | Occupancy |
 
-Both report `unavailable` until the first frame arrives, rather than asserting
-an empty room for a system that has not produced anything yet.
-
-`multi_source_targets` counts tracks seen by two or more radars — the tracks
-that fusion actually contributed something to, as opposed to a single radar's
-own detection.
-
-Only these two summary entities go to the HA Recorder. Trajectory data goes to
-its own database (below) to keep the recorder from being flooded.
-
----
-
-## How it works
-
-1. The backend subscribes to each radar's atomic target frames; older devices
-   without atomic frames still work via their split X/Y entities.
-2. Each radar's coordinates are transformed into one shared floor-plan frame
-   using its installation position and yaw/pitch/roll.
-3. Nearby observations from different radars are clustered, then a global
-   minimum-cost assignment plus an alpha-beta tracker maintains `track_id`.
-   Same-radar slots that sit on top of each other are collapsed first;
-   unmatched clusters next to an existing track do not mint a new identity;
-   two confirmed tracks that stay within `merge_gate_cm` for `merge_confirm_s`
-   are merged into the older `track_id`.
-4. `track_ttl_s` lets a track survive a brief dropout; `confirm_hits` rejects
-   one-off false positives.
-5. Tracks, events and radar calibration health are pushed to the card over
-   `mmwave_fusion/subscribe`.
-
-### Coordinate convention
-
-`yaw = 0` aims along room **+Y**, positive turns toward **+X**. Floor-plan FOV,
-the zone editor, the 3-D installation view and this backend all share it.
-
-> **This convention is implemented three times, in three repositories** — here
-> in [mmwave-engine](https://github.com/zomco/mmwave-engine) `mmwave_engine/fusion.py::transform_point`, in the ESPHome components, and in the card's
-> `src/utils/transform.ts`. Changing one alone silently mirrors everyone's
-> coordinates while this repository's own tests stay green. See
-> [AGENTS.md](./AGENTS.md).
-
-### Calibration diagnostics
-
-The backend tracks what fraction of each radar's transformed observations land
-inside the floor-plan rectangle. After at least 100 observations, a radar with
-under 20% inside triggers a calibration warning in the card. This catches a
-flipped yaw sign, a wrong installation point, or a unit mismatch.
-
----
-
-## Trajectory quality and recording admission
-
-Zones still produce raw `enter`, `exit` and `dwell` events. When a track ends,
-the quality engine additionally produces:
-
-- **`traverse`** — a track that meets the hard conditions and scores above
-  threshold. These can trigger recording.
-- **`trajectory`** — a track that did not qualify. Diagnostics are stored; no
-  recording.
-
-Scoring is out of 100 and combines: whether a complete enter/exit topology
-formed, the valid-observation ratio and largest gap, displacement and path
-efficiency, largest position jump, the fraction of observations inside the
-floor plan, how many radars contributed, and track duration.
-
-Brief false positives, insufficient displacement, intermittent observation,
-large jumps, or tracks mostly outside the floor plan are rejected. The
-rejection reason, sub-scores, metrics and per-camera recording decision are all
-written into event metadata and shown in the card.
-
-### Recording
-
-Only `recording_source: ha_live` is supported. Camera SD cards and NVR archives
-are not read. By default a camera keeps stills and clips for `enter`, `dwell`
-and `traverse` (not `exit` or rejected `trajectory`). A still is written first
-so the event list can show a thumbnail before the MP4 is ready.
-
-1. An HA HLS stream is pre-warmed for each camera entity at startup.
-2. HA reuses that camera's single decode worker and keeps roughly 30 s of
-   segments in memory.
-3. Only key events allowed by the camera's `event_types` call `camera.record`.
-4. Dynamic lookback covers as much of the track as possible, capped at
-   `buffer_seconds` (max 30 s).
-5. The call uses blocking completion, then verifies the file exists and is
-   non-empty before the status becomes `ready`. The backend then fires
-   `mmwave_fusion_clip_ready` so automations and the card can attach the MP4
-   without delaying the original `mmwave_fusion_event`.
-
-This means no ISAPI queries, no historical RTSP playback, no repeated indexing
-against the camera. The steady-state load is one live stream per camera, and HA
-writes a clip to `/media/mmwave_fusion/<fusion_id>/...` only for key tracks.
-
-`cooldown_s` limits the minimum interval between recordings for the same
-camera, zone and event type. Event queries return `waiting`, `extracting`,
-`ready` or `failed` explicitly, and failures surface in the card.
-
----
-
-## History and retention
-
-Fused tracks, their points, zone events and recorded clips go to
-`config/.storage/mmwave_fusion.sqlite`.
-
-`track_points` is written at the fusion rate and dominates the database. On the
-development instance it reached 1.66 million rows and 276 MB in 5.4 days, about
-51 MB a day. Retention therefore runs every 6 hours:
+Both stay `unavailable` until the first frame. Only these two go to the Recorder. Tracks go to `config/.storage/mmwave_fusion.sqlite`.
 
 | Data | Kept |
 | --- | --- |
 | `track_points` | 7 days |
 | `tracks`, `events` | 90 days |
-| `clips` (MP4 under `/media/mmwave_fusion` plus the row) | 30 days |
+| clips under `/media/mmwave_fusion` | 30 days |
 
-Events that still have a clip row are kept so the file is not orphaned. Once
-the clip window expires, the file is deleted and the event can leave on the
-same sweep if it is older than the event window. All three windows are settable
-from the integration's options.
+SQLite does not shrink the file until you stop Home Assistant and run `VACUUM`.
 
-Write frequency is limited by `quality.persist_interval_s`, which drops the
-default 10 Hz fusion rate to at most 2 Hz on disk, and only points backed by an
-actual radar observation are stored.
+Configuration WebSocket commands are admin-only. `subscribe`, `query_events`, and `query_track` are not, so any Home Assistant user can see live positions and stored tracks. To close that, add `@websocket_api.require_admin` on those three commands in `websocket_api.py`. Non-administrators then lose the live view.
 
-SQLite reuses freed pages but does not shrink the file, so pruning stops growth
-without reclaiming space already allocated. To reclaim it, stop Home Assistant
-once and run `VACUUM` against the database.
+## Radars
 
----
+**1D radars cannot use this integration.** **2D radars can use every feature in the project**, including this one. R60ABD1 also reports height; it is listed with the 2D models because it can be fused.
 
-## WebSocket API and who can call it
+Figures and progress match [mmwave-component](https://github.com/zomco/mmwave-component/blob/main/README.md). `—` means the manual does not state it. A cell marked *accuracy* is not a range-gate width. LD2410 at 0.20 m resolution reaches 1.6 m. LD2451 reports whole metres. LD2450 and LD2454 publish resolution in each target frame. LD2454's performance table says 8 m; the install section says 6 m tracking.
 
-The card talks to the integration over these commands:
+### 1D radars
 
-| Command | Requires admin |
-| --- | --- |
-| `mmwave_fusion/configure` | yes |
-| `mmwave_fusion/get_config` | yes |
-| `mmwave_fusion/remove_config` | yes |
-| `mmwave_fusion/list_calibration_profiles` | yes |
-| `mmwave_fusion/upsert_calibration_profile` | yes |
-| `mmwave_fusion/remove_calibration_profile` | yes |
-| `mmwave_fusion/subscribe` | **no** |
-| `mmwave_fusion/query_events` | **no** |
-| `mmwave_fusion/query_track` | **no** |
+| Model | Detection distance | Distance resolution | Progress |
+| --- | --- | --- | --- |
+| LD2410 | 6 m | 0.75 m / 0.20 m | Developing |
+| LD2410B | 6 m | 0.75 m (protocol can also select 0.20 m) | Testing |
+| LD2410C | 6 m | 0.75 m (protocol can also select 0.20 m) | Testing |
+| LD2411 | 2 m (gesture 1 m) | — | Developing |
+| LD2411S | 6 m (micro-motion 3.5 m) | ±5 cm / ±5% (accuracy) | Developing |
+| LD2412 | 9 m | 0.75 m | Developing |
+| LD2420 | 8 m (micro-motion 6 m) | 0.70 m | Developing |
+| LD2450A | 2 m | 0.2 m (sensing accuracy) | Developing |
+| LD6002 | 1.5 m (breath / heart) | — | Developing |
+| RD-03E | 6 m (micro-motion 3.5 m) | ±5 cm / ±5% (accuracy) | Developing |
 
-Everything that changes configuration is admin-only. The three read commands
-are deliberately not, so non-administrator household members can open a
-dashboard and see their own home.
+### 2D radars
 
-**Be aware of what that means.** Any Home Assistant user — including a
-restricted or guest account — can subscribe to live occupant positions and
-query the full stored trajectory history for any fusion system. If that is not
-appropriate for your household, add `@websocket_api.require_admin` above those
-three commands in `websocket_api.py`; the cost is that non-administrators lose
-the live view and the event list.
-
-This is a deliberate default, not an oversight, and it is called out here
-rather than changed silently because tightening it degrades the dashboard for
-exactly the people it is meant to serve.
-
----
-
-## Conversation, calibration help, and clip review
-
-These are opt-in. They do not run until you turn them on, and they never name
-people — radar tracks are anonymous.
-
-### Ask Assist about the room
-
-The integration registers an LLM API named **MMWave Fusion**. Enable it on a
-conversation agent (OpenAI, Ollama, Google, …) under **Control Home Assistant**.
-It is not injected into the built-in Assist API on purpose: location history
-stays off until you check the box.
-
-| Tool | What it answers |
-| --- | --- |
-| `GetOccupancy` | Who is in the room and in each zone *right now* (still anonymous) |
-| `QueryEvents` | `enter` / `exit` / `dwell` / `traverse` / `trajectory` in a time window |
-| `SummarizePresence` | Event counts plus the hottest occupancy-grid cells |
-| `DiagnoseCalibration` | Per-radar health and the usual yaw mistakes |
-
-Example questions: “Is anyone in the kitchen?”, “When did someone enter the
-desk zone this afternoon?”, “The live point is mirrored — what should I check?”
-
-Mirrored motion means yaw is 180° off; motion at right angles means 90° off.
-2D radars cannot infer pitch/roll from floor points. Recalibrate from the
-mmWave card rather than inventing numbers.
-
-If the [MCP Server](https://www.home-assistant.io/integrations/mcp_server/)
-integration is installed, the same API is at `/api/mcp/mmwave_fusion`.
-
-Anyone who can talk to that conversation agent can query occupancy history.
-That is the same trade-off as the read-only WebSocket commands above.
-
-### Review a traverse clip with an AI Task
-
-A scored `traverse` already records a short clip. Optionally, an
-[AI Task](https://www.home-assistant.io/integrations/ai_task/) entity can look
-at a still from the same camera and store `person`, `pet`, `false_positive`, or
-`uncertain` on the clip. Set **AI Task entity for clip review** in this
-integration's options. Leave it empty to skip.
-
-The recording stays `ready` even if the model is down. A second bus event,
-`mmwave_fusion_clip_reviewed`, fires when a verdict lands. `QueryEvents`
-includes it so Assist can say “the camera looked empty” rather than only
-“radar scored a crossing”.
-
----
-
-## Blueprints
-
-Four automation blueprints ship in
-[`blueprints/automation/mmwave_fusion/`](blueprints/automation/mmwave_fusion).
-Import by URL from **Settings → Automations & scenes → Blueprints →
-Import blueprint**.
-
-Apartment common areas (lobby, corridor, stairwell, garage) use **fusion** even
-with one 2-D radar. Indoor bathrooms, desks and beds use **single-radar Area
-Occupied** on the device — not these blueprints, and not a camera.
-
-On the card, **Replay** is “what happened at 3am”; **Heatmap** is “which stretch
-of corridor is used”. Neither names people.
-
-### Light follows zone presence
-
-[`zone_presence_light.yaml`](blueprints/automation/mmwave_fusion/zone_presence_light.yaml)
-
-Turns a light on while a zone is occupied and off once it is empty. Apartment:
-elevator hall, corridor, landing outside a flat door.
-
-This is not the stock motion-light blueprint with a different sensor. A PIR
-reports *movement*, so every motion-light automation needs a timeout, and every
-timeout is a compromise between dying on someone who is reading and burning for
-ten minutes after they leave. A fused zone reports *presence*, so there is
-nothing to guess. The grace period exists to ride out a single dropped frame,
-not to estimate how long a person might sit still — needing more than a minute
-of it means there is a calibration problem being worked around.
-
-### Notify when a zone is occupied
-
-[`zone_occupancy_notification.yaml`](blueprints/automation/mmwave_fusion/zone_occupancy_notification.yaml)
-
-Phone buzz when the hall becomes occupied. Optional night window. Presence, not
-a scored crossing.
-
-### Notify on a scored crossing
-
-[`traverse_notification.yaml`](blueprints/automation/mmwave_fusion/traverse_notification.yaml)
-
-Fires on a `traverse` event: a complete, well-observed path through a zone, as
-judged by the quality engine described above. Trajectories that fail those
-checks are emitted as `trajectory` with a reason and are not matched — which is
-the point, because a notification that fires on every reflection off a curtain
-is one people turn off. The minimum score is a second filter for rooms where
-even a clean crossing is not always worth a phone buzzing.
-
-Apartment lobby: leave **Only at night** off. Night trespass on a stairwell or
-roof door: turn it on (default 23:00–06:00) so daytime neighbours stay quiet.
-A camera on that zone is optional.
-
-The first notification is sent immediately. If a camera is configured for the
-zone, a second one attaches `/media/local/<clip_path>` when
-`mmwave_fusion_clip_ready` fires, rather than delaying the first message for
-the recording.
-
-### Notify when someone stays in a zone
-
-[`dwell_timeout_notification.yaml`](blueprints/automation/mmwave_fusion/dwell_timeout_notification.yaml)
-
-Fires on `dwell`. Set **Dwell seconds** on the zone in the card (300 for a
-five-minute garage corner or roof). The blueprint does not choose the timeout.
-Optional night window. No camera.
-
----
-
-## Development
-
-| Module | Responsibility |
-| --- | --- |
-| [mmwave-engine](https://github.com/zomco/mmwave-engine) | Tracking, zone events, scoring, SQLite, clip admission. No HA imports. |
-| `coordinator.py` | HA shell: entity ingest, video sink, bus events |
-| `ha_video.py` | `camera.snapshot` / `camera.record` adapter |
-| `events.py` | Zone events, camera recording orchestration |
-| `storage.py` | SQLite schema, writes, retention |
-| `profiles.py` | Shared calibration profiles keyed by HA `device_id` |
-| `websocket_api.py` | The commands above |
-| `config_flow.py` | Config entry creation (asks nothing) |
-
-Unit tests live in the development workspace
-([mmwave-workspace](https://github.com/zomco/mmwave-workspace)), which carries
-this repository as a submodule alongside the card and the ESPHome components:
-
-```bash
-python -m unittest discover -s tests/unit
-```
-
-They stub Home Assistant rather than importing it, so they run without a Home
-Assistant installation.
-
----
+| Model | Detection distance | Angle | Distance resolution | Progress |
+| --- | --- | --- | --- | --- |
+| LD2450 | 6 m | azimuth ±60°, elevation ±35° | per frame | Developing |
+| LD2451 | 100 m | horizontal ±15°, vertical ±7° | 1 m | Testing |
+| LD2452 | 6 m | azimuth ±60°, elevation ±30° | 0.72 m | Testing |
+| LD2453 | 6 m | azimuth ±40°, elevation ±30° | 0.72 m | Developing |
+| LD2454 | 8 m | azimuth ±60°, elevation ±30° | per frame | Testing |
+| R60ABD1 | 2.5 m (breath / heart 1.5 m) | ±20° | — | Completed |
 
 ## License
 
 MIT
-
-### Calibration consistency (API v4)
-
-Runtime calibration changes are saved transactionally and shared through device calibration profiles. Revision checks reject stale writes; ordinary card configuration preserves managed poses. Applying new poses clears incompatible tracking history without restarting camera recording.
-
-### Runtime backpressure
-
-Each radar keeps only its latest complete frame between fusion ticks, including empty frames.
-Slow database writes cannot accumulate old frames as simultaneous targets. The tracker also
-coalesces radar slots and removes expired observations/tracks before allocating its matching
-matrix, so a delayed tick does not monopolize Home Assistant’s event loop.
-Retention has time indexes and deletes at most 1,000 rows per transaction, releasing the writer lock between batches so cleanup does not stall live tracking.
